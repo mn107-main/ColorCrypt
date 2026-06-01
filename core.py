@@ -36,8 +36,7 @@ COMPRESS_LEVELS = {
 }
 
 ENCODE_MODES = {
-    "base64": "base64",
-    "raw": "raw"
+    "base64": "base64"
 }
 
 CHUNK_SIZES = {
@@ -252,11 +251,8 @@ class ColorCryptCore:
             channels = self.get_channels_count()
             mode_char = self.get_mode_char()
 
-            if self.encode_mode == "base64":
-                b64_data = base64.b64encode(data).decode('ascii')
-                data_bytes = b64_data.encode('ascii')
-            else:
-                data_bytes = bytes(data)
+            b64_data = base64.b64encode(data).decode('ascii')
+            data_bytes = b64_data.encode('ascii')
 
             if self.compress_enabled:
                 data_bytes = self.compress_data(data_bytes)
@@ -445,10 +441,7 @@ class ColorCryptCore:
                 data_to_process = self.decompress_data(data_to_process)
 
             self._update_progress(80, 100, "Финальная обработка...")
-            if encode_mode == "base64":
-                final_data = base64.b64decode(data_to_process)
-            else:
-                final_data = data_to_process
+            final_data = base64.b64decode(data_to_process)
 
             if sha256 and self.integrity_enabled:
                 calc_sha = hashlib.sha256(final_data).hexdigest()
@@ -529,10 +522,7 @@ class ColorCryptCore:
             if compressed:
                 data_to_process = self.decompress_data(data_to_process)
 
-            if encode_mode == "base64":
-                final_data = base64.b64decode(data_to_process)
-            else:
-                final_data = data_to_process
+            final_data = base64.b64decode(data_to_process)
 
             if output_dir is None:
                 output_dir = self.output_dir or os.path.dirname('.')
@@ -718,7 +708,7 @@ def main_cli():
     parser.add_argument('-p', '--password')
     parser.add_argument('-c', '--compress', choices=['none', 'min', 'normal', 'max'], default='normal')
     parser.add_argument('-m', '--mode', choices=['mono', 'rgb', 'rgba'], default='rgb')
-    parser.add_argument('--encode-mode', choices=['base64', 'raw'], default='base64')
+    parser.add_argument('--encode-mode', choices=['base64'], default='base64')
     parser.add_argument('--no-integrity', action='store_true')
     parser.add_argument('--format', choices=['PNG', 'WebP', 'BMP'], default='PNG')
     parser.add_argument('--chunk', action='store_true')

@@ -364,11 +364,8 @@ class ColorCryptApp:
         encode_frame = ttk.LabelFrame(settings_frame, text="Режим кодирования данных")
         encode_frame.pack(pady=5, padx=10, fill=tk.X)
 
-        ttk.Radiobutton(encode_frame, text="Base64 — совместимый режим (рекомендуется)",
+        ttk.Radiobutton(encode_frame, text="Base64 — совместимый режим",
                         variable=self.encode_mode_var, value="base64",
-                        command=self._update_core_settings).pack(anchor=tk.W, padx=5, pady=2)
-        ttk.Radiobutton(encode_frame, text="Raw — быстрый режим (сырые байты)",
-                        variable=self.encode_mode_var, value="raw",
                         command=self._update_core_settings).pack(anchor=tk.W, padx=5, pady=2)
 
         compress_frame = ttk.LabelFrame(settings_frame, text="Сжатие данных (zlib)")
