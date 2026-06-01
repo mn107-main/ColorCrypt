@@ -80,5 +80,4 @@ The GUI provides tabs for Encode, Decode, Settings, and Batch processing.
 ```
 core.py   — encoding/decoding engine + CLI
 gui.py    — Tkinter graphical interface
-dat/      — output directory placeholder
 ```
