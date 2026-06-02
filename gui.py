@@ -7,7 +7,6 @@ import string
 import re
 import json
 import threading
-from functools import partial
 import time
 
 try:
@@ -17,6 +16,7 @@ except ImportError:
     HAS_DND = False
 
 from core import ColorCryptCore, MODE_MONO, MODE_RGB, MODE_RGBA, OUTPUT_FORMATS, ENCODE_MODES, CHUNK_SIZES, CURRENT_VERSION
+from stego_media import MediaSteganography, AVAILABLE_CODECS
 
 class ColorCryptApp:
     def __init__(self, root):
@@ -44,6 +44,7 @@ class ColorCryptApp:
         self.chunk_mode_var = tk.BooleanVar(value=False)
         self.chunk_size_var = tk.StringVar(value="50MB")
         self.preserve_filename_var = tk.BooleanVar(value=True)
+        self.lsb_bits_var = tk.IntVar(value=0)
 
         self.encryption_var = tk.BooleanVar(value=False)
         self.password_var = tk.StringVar(value="")
@@ -51,6 +52,17 @@ class ColorCryptApp:
         self.hint_var = tk.StringVar(value="")
 
         self.batch_files = []
+
+        self.iii_container_path = ""
+        self.iii_secret_path = ""
+        self.iii_output_path = ""
+
+        self.media_input_path = ""
+        self.media_output_path = ""
+        self.media_data_file = ""
+        self.media_codec_var = tk.StringVar(value="GIF")
+        self.media_mode_var = tk.StringVar(value="encode")
+        self.media_use_alpha_var = tk.BooleanVar(value=True)
 
         self.load_settings()
 
@@ -95,7 +107,8 @@ class ColorCryptApp:
             encode_mode=self.encode_mode_var.get(),
             chunk_mode=self.chunk_mode_var.get(),
             chunk_size=self.chunk_size_var.get(),
-            preserve_filename=self.preserve_filename_var.get()
+            preserve_filename=self.preserve_filename_var.get(),
+            lsb_bits=self.lsb_bits_var.get()
         )
 
     def save_settings(self):
@@ -112,6 +125,7 @@ class ColorCryptApp:
             'chunk_size': self.chunk_size_var.get(),
             'encryption': self.encryption_var.get(),
             'preserve_filename': self.preserve_filename_var.get(),
+            'lsb_bits': self.lsb_bits_var.get(),
             'window_geometry': self.root.geometry(),
             'window_state': self.root.state()
         }
@@ -137,6 +151,7 @@ class ColorCryptApp:
                 self.chunk_size_var.set(settings.get('chunk_size', '50MB'))
                 self.encryption_var.set(settings.get('encryption', False))
                 self.preserve_filename_var.set(settings.get('preserve_filename', True))
+                self.lsb_bits_var.set(settings.get('lsb_bits', 0))
                 if settings.get('window_geometry'):
                     self.root.geometry(settings['window_geometry'])
         except:
@@ -297,6 +312,143 @@ class ColorCryptApp:
         batch_frame = ttk.Frame(notebook)
         notebook.add(batch_frame, text="Пакетная обработка")
 
+        iii_frame = ttk.Frame(notebook)
+        notebook.add(iii_frame, text="Картинка в картинке")
+
+        iii_container_frame = ttk.LabelFrame(iii_frame, text="1. Контейнер (куда прячем)")
+        iii_container_frame.pack(pady=5, padx=10, fill=tk.X)
+        ttk.Button(iii_container_frame, text="📂 Выбрать изображение-контейнер",
+                   command=self._iii_select_container).pack(pady=5)
+        self.iii_container_label = ttk.Label(iii_container_frame, text="Не выбран", foreground="gray")
+        self.iii_container_label.pack(pady=2)
+
+        iii_secret_frame = ttk.LabelFrame(iii_frame, text="2. Секретное изображение")
+        iii_secret_frame.pack(pady=5, padx=10, fill=tk.X)
+        ttk.Button(iii_secret_frame, text="📂 Выбрать секретное изображение",
+                   command=self._iii_select_secret).pack(pady=5)
+        self.iii_secret_label = ttk.Label(iii_secret_frame, text="Не выбран", foreground="gray")
+        self.iii_secret_label.pack(pady=2)
+
+        iii_options_frame = ttk.LabelFrame(iii_frame, text="3. Опции")
+        iii_options_frame.pack(pady=5, padx=10, fill=tk.X)
+        self.iii_use_alpha_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(iii_options_frame, text="Использовать альфа-канал",
+                        variable=self.iii_use_alpha_var).pack(anchor=tk.W, padx=5, pady=2)
+        self.iii_restore_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(iii_options_frame, text="Восстановить контейнер после декодирования",
+                        variable=self.iii_restore_var).pack(anchor=tk.W, padx=5, pady=2)
+
+        iii_output_frame = ttk.LabelFrame(iii_frame, text="4. Сохранение")
+        iii_output_frame.pack(pady=5, padx=10, fill=tk.X)
+        ttk.Button(iii_output_frame, text="📁 Выбрать путь сохранения",
+                   command=self._iii_select_output).pack(pady=5)
+        self.iii_output_label = ttk.Label(iii_output_frame, text="Не указан", foreground="gray")
+        self.iii_output_label.pack(pady=2)
+
+        iii_action_frame = ttk.Frame(iii_frame)
+        iii_action_frame.pack(pady=10)
+        ttk.Button(iii_action_frame, text="▶ Закодировать (прячем секрет в контейнер)",
+                   command=self._iii_encode, width=35).pack(pady=2)
+        ttk.Button(iii_action_frame, text="◀ Декодировать (извлечь секрет из контейнера)",
+                   command=self._iii_decode, width=35).pack(pady=2)
+
+        self.iii_status_label = ttk.Label(iii_frame, text="Готов", foreground="gray")
+        self.iii_status_label.pack(pady=5)
+
+        iii_result_frame = ttk.LabelFrame(iii_frame, text="Результат")
+        iii_result_frame.pack(pady=5, padx=10, fill=tk.BOTH, expand=True)
+        self.iii_result_text = scrolledtext.ScrolledText(iii_result_frame, height=8, font=("Courier", 9))
+        self.iii_result_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        media_frame = ttk.Frame(notebook)
+        notebook.add(media_frame, text="Медиа (MP4/GIF/MP3)")
+
+        media_info = ttk.LabelFrame(media_frame, text="Доступные кодеки")
+        media_info.pack(pady=5, padx=10, fill=tk.X)
+        media_status = "✅ " + ", ".join(AVAILABLE_CODECS) if AVAILABLE_CODECS else "❌ Нет доступных кодеков"
+        ttk.Label(media_info, text=media_status).pack(pady=5)
+
+        media_mode_frame = ttk.LabelFrame(media_frame, text="Режим")
+        media_mode_frame.pack(pady=5, padx=10, fill=tk.X)
+        ttk.Radiobutton(media_mode_frame, text="Закодировать (спрятать данные в медиа)",
+                        variable=self.media_mode_var, value="encode").pack(anchor=tk.W, padx=5, pady=2)
+        ttk.Radiobutton(media_mode_frame, text="Декодировать (извлечь данные из медиа)",
+                        variable=self.media_mode_var, value="decode").pack(anchor=tk.W, padx=5, pady=2)
+
+        media_codec_sel = ttk.LabelFrame(media_frame, text="Формат медиа")
+        media_codec_sel.pack(pady=5, padx=10, fill=tk.X)
+        if AVAILABLE_CODECS:
+            ttk.Combobox(media_codec_sel, textvariable=self.media_codec_var,
+                        values=AVAILABLE_CODECS, state="readonly", width=10).pack(padx=5, pady=5)
+        else:
+            ttk.Label(media_codec_sel, text="Установите imageio или ffmpeg").pack(pady=5)
+
+        media_file_frame = ttk.LabelFrame(media_frame, text="Файл")
+        media_file_frame.pack(pady=5, padx=10, fill=tk.X)
+        ttk.Button(media_file_frame, text="📂 Выбрать медиа-файл",
+                   command=self._media_select_input).pack(pady=5)
+        self.media_input_label = ttk.Label(media_file_frame, text="Не выбран", foreground="gray")
+        self.media_input_label.pack(pady=2)
+
+        media_data_frame = ttk.LabelFrame(media_frame, text="Файл с данными (для кодирования)")
+        media_data_frame.pack(pady=5, padx=10, fill=tk.X)
+        ttk.Button(media_data_frame, text="📂 Выбрать файл с данными",
+                   command=self._media_select_data).pack(pady=5)
+        self.media_data_label = ttk.Label(media_data_frame, text="Не выбран", foreground="gray")
+        self.media_data_label.pack(pady=2)
+
+        media_out_frame = ttk.LabelFrame(media_frame, text="Сохранение")
+        media_out_frame.pack(pady=5, padx=10, fill=tk.X)
+        ttk.Button(media_out_frame, text="📁 Выбрать путь сохранения",
+                   command=self._media_select_output).pack(pady=5)
+        self.media_output_label = ttk.Label(media_out_frame, text="Не указан", foreground="gray")
+        self.media_output_label.pack(pady=2)
+
+        media_action_frame = ttk.Frame(media_frame)
+        media_action_frame.pack(pady=10)
+        ttk.Button(media_action_frame, text="▶ Выполнить", command=self._media_process, width=20).pack()
+
+        self.media_status_label = ttk.Label(media_frame, text="Готов", foreground="gray")
+        self.media_status_label.pack(pady=5)
+
+        scan_frame = ttk.Frame(notebook)
+        notebook.add(scan_frame, text="Детектор")
+
+        scan_file_frame = ttk.LabelFrame(scan_frame, text="Файл для сканирования")
+        scan_file_frame.pack(pady=5, padx=10, fill=tk.X)
+        ttk.Button(scan_file_frame, text="📂 Выбрать изображение",
+                   command=self._scan_select_file).pack(pady=5)
+        self.scan_file_label = ttk.Label(scan_file_frame, text="Не выбран", foreground="gray")
+        self.scan_file_label.pack(pady=2)
+
+        scan_opts_frame = ttk.LabelFrame(scan_frame, text="Параметры сканирования")
+        scan_opts_frame.pack(pady=5, padx=10, fill=tk.X)
+        self.scan_alpha_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(scan_opts_frame, text="Сканировать альфа-канал",
+                        variable=self.scan_alpha_var).pack(anchor=tk.W, padx=5, pady=2)
+        self.scan_rgb_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(scan_opts_frame, text="Сканировать RGB-каналы",
+                        variable=self.scan_rgb_var).pack(anchor=tk.W, padx=5, pady=2)
+        layers_frame = ttk.Frame(scan_opts_frame)
+        layers_frame.pack(fill=tk.X, padx=5, pady=5)
+        ttk.Label(layers_frame, text="Глубина LSB:").pack(side=tk.LEFT)
+        self.scan_layers_var = tk.IntVar(value=4)
+        ttk.Spinbox(layers_frame, from_=1, to=8, textvariable=self.scan_layers_var,
+                    width=5).pack(side=tk.LEFT, padx=5)
+
+        scan_btn_frame = ttk.Frame(scan_frame)
+        scan_btn_frame.pack(pady=10)
+        ttk.Button(scan_btn_frame, text="🔍 Сканировать", command=self._scan_process,
+                   width=20).pack()
+
+        scan_result_frame = ttk.LabelFrame(scan_frame, text="Результаты сканирования")
+        scan_result_frame.pack(pady=5, padx=10, fill=tk.BOTH, expand=True)
+        self.scan_result_text = scrolledtext.ScrolledText(scan_result_frame, height=12, font=("Courier", 9))
+        self.scan_result_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        self.scan_status_label = ttk.Label(scan_frame, text="Готов", foreground="gray")
+        self.scan_status_label.pack(pady=5)
+
         debug_frame = ttk.Frame(notebook)
         notebook.add(debug_frame, text="Отладка")
 
@@ -407,6 +559,13 @@ class ColorCryptApp:
 
         ttk.Checkbutton(opt_frame, text="Сохранять оригинальное имя файла",
                         variable=self.preserve_filename_var, command=self._update_core_settings).pack(anchor=tk.W, pady=2)
+
+        lsb_frame = ttk.Frame(opt_frame)
+        lsb_frame.pack(fill=tk.X, padx=5, pady=2)
+        ttk.Label(lsb_frame, text="LSB-битность (0 = прямой режим):").pack(side=tk.LEFT)
+        ttk.Combobox(lsb_frame, textvariable=self.lsb_bits_var,
+                    values=[0, 1, 2, 3, 4], state="readonly", width=5).pack(side=tk.LEFT, padx=5)
+        ttk.Label(lsb_frame, text="(1-4 = LSB стеганография)", foreground="gray").pack(side=tk.LEFT, padx=2)
 
         output_dir_frame = ttk.LabelFrame(settings_frame, text="Папка для сохранения")
         output_dir_frame.pack(pady=5, padx=10, fill=tk.X)
@@ -527,6 +686,7 @@ class ColorCryptApp:
         self.text_area.delete(1.0, tk.END)
         self.input_file_path = ""
         self.file_label.config(text="Файл не выбран")
+        self._update_core_settings()
 
         if self.mode_var.get() == "encode":
             self.btn_select.config(text="📂 Выбрать файл для кодирования")
@@ -818,6 +978,256 @@ class ColorCryptApp:
                                                        f"Обработано файлов: {len(results)}\n"
                                                        f"✅ Успешно: {success_count}\n"
                                                        f"❌ Ошибок: {len(results) - success_count}"))
+
+    # ─── Image-in-Image ────────────────────────────────────────────────
+
+    def _iii_select_container(self):
+        path = filedialog.askopenfilename(title="Выберите изображение-контейнер",
+                                          filetypes=[("Image files", "*.png *.webp *.bmp")])
+        if path:
+            self.iii_container_path = path
+            self.iii_container_label.config(text=os.path.basename(path))
+
+    def _iii_select_secret(self):
+        path = filedialog.askopenfilename(title="Выберите секретное изображение",
+                                          filetypes=[("Image files", "*.png *.jpg *.jpeg *.webp *.bmp")])
+        if path:
+            self.iii_secret_path = path
+            self.iii_secret_label.config(text=os.path.basename(path))
+
+    def _iii_select_output(self):
+        path = filedialog.asksaveasfilename(title="Сохранить как",
+                                            defaultextension=".png",
+                                            filetypes=[("PNG image", "*.png")])
+        if path:
+            self.iii_output_path = path
+            self.iii_output_label.config(text=os.path.basename(path))
+
+    def _iii_encode(self):
+        if not self.iii_container_path or not self.iii_secret_path:
+            messagebox.showwarning("Предупреждение", "Выберите контейнер и секретное изображение")
+            return
+        if not self.iii_output_path:
+            messagebox.showwarning("Предупреждение", "Укажите путь сохранения")
+            return
+
+        self.iii_result_text.delete(1.0, tk.END)
+        self.iii_result_text.insert(tk.END, "Кодирование Image-in-Image...\n")
+        self.iii_status_label.config(text="⏳ Работаю...")
+
+        def task():
+            try:
+                result = self.core.encode_image_in_image(
+                    self.iii_container_path, self.iii_secret_path,
+                    self.iii_output_path, use_alpha=self.iii_use_alpha_var.get()
+                )
+                self.root.after(0, lambda: self._iii_callback(result))
+            except Exception as e:
+                self.root.after(0, lambda: self._iii_callback({'success': False, 'error': str(e)}))
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _iii_decode(self):
+        path = self.iii_container_path
+        if not path:
+            path = filedialog.askopenfilename(title="Выберите изображение для декодирования",
+                                              filetypes=[("PNG image", "*.png")])
+            if not path:
+                return
+
+        if not self.iii_output_path:
+            self.iii_output_path = filedialog.asksaveasfilename(
+                title="Сохранить секрет как",
+                defaultextension=".png",
+                filetypes=[("PNG image", "*.png")])
+            if not self.iii_output_path:
+                return
+
+        self.iii_result_text.delete(1.0, tk.END)
+        self.iii_result_text.insert(tk.END, "Декодирование Image-in-Image...\n")
+        self.iii_status_label.config(text="⏳ Работаю...")
+
+        def task():
+            try:
+                result = self.core.decode_image_in_image(
+                    path, self.iii_output_path, use_alpha=self.iii_use_alpha_var.get(),
+                    restore_container=self.iii_restore_var.get()
+                )
+                self.root.after(0, lambda: self._iii_callback(result))
+            except Exception as e:
+                self.root.after(0, lambda: self._iii_callback({'success': False, 'error': str(e)}))
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _iii_callback(self, result):
+        self.iii_result_text.delete(1.0, tk.END)
+        if result['success']:
+            self.iii_result_text.insert(tk.END, "✅ Успех!\n\n")
+            self.iii_result_text.insert(tk.END, f"📁 Сохранено: {result['output_path']}\n")
+            self.iii_result_text.insert(tk.END, f"🔲 Размер секрета: {result.get('secret_size', '?')}\n")
+            if result.get('alpha_preserved'):
+                self.iii_result_text.insert(tk.END, "   Альфа-канал сохранён\n")
+            if result.get('restored_container'):
+                self.iii_result_text.insert(tk.END, f"♻ Контейнер восстановлен: {result['restored_container']}\n")
+            self.iii_status_label.config(text="✅ Готово")
+        else:
+            self.iii_result_text.insert(tk.END, f"❌ Ошибка: {result.get('error')}\n")
+            self.iii_status_label.config(text="❌ Ошибка")
+
+    # ─── Media Steganography ───────────────────────────────────────────
+
+    def _media_select_input(self):
+        ext = []
+        codec = self.media_codec_var.get()
+        if codec == 'GIF':
+            ext = [("GIF files", "*.gif")]
+        elif codec == 'MP4':
+            ext = [("MP4 files", "*.mp4")]
+        elif codec == 'MP3':
+            ext = [("MP3 files", "*.mp3")]
+        path = filedialog.askopenfilename(title="Выберите медиа-файл", filetypes=ext)
+        if path:
+            self.media_input_path = path
+            self.media_input_label.config(text=os.path.basename(path))
+
+    def _media_select_data(self):
+        path = filedialog.askopenfilename(title="Выберите файл с данными",
+                                          filetypes=[("All files", "*.*")])
+        if path:
+            self.media_data_file = path
+            self.media_data_label.config(text=os.path.basename(path))
+
+    def _media_select_output(self):
+        codec = self.media_codec_var.get()
+        ext = codec.lower() if codec else 'bin'
+        path = filedialog.asksaveasfilename(title="Сохранить как",
+                                            defaultextension=f".{ext}",
+                                            filetypes=[(f"{codec} files", f"*.{ext}")])
+        if path:
+            self.media_output_path = path
+            self.media_output_label.config(text=os.path.basename(path))
+
+    def _media_process(self):
+        if not self.media_input_path:
+            messagebox.showwarning("Предупреждение", "Выберите медиа-файл")
+            return
+
+        codec = self.media_codec_var.get()
+        mode = self.media_mode_var.get()
+
+        if mode == "encode" and not self.media_data_file:
+            messagebox.showwarning("Предупреждение", "Выберите файл с данными")
+            return
+
+        if not self.media_output_path:
+            ext = codec.lower() if mode == "encode" else "bin"
+            out = filedialog.asksaveasfilename(title="Сохранить как",
+                                               defaultextension=f".{ext}",
+                                               filetypes=[("All files", "*.*")])
+            if not out:
+                return
+            self.media_output_path = out
+            self.media_output_label.config(text=os.path.basename(out))
+
+        media = MediaSteganography()
+        self.media_status_label.config(text="⏳ Работаю...")
+
+        def task():
+            try:
+                if mode == "encode":
+                    with open(self.media_data_file, 'rb') as f:
+                        data = f.read()
+
+                    if codec == 'GIF':
+                        result = media.encode_gif(self.media_input_path, data, self.media_output_path)
+                    elif codec == 'MP4':
+                        result = media.encode_mp4(self.media_input_path, data, self.media_output_path)
+                    elif codec == 'MP3':
+                        result = media.encode_mp3(self.media_input_path, data, self.media_output_path)
+                    else:
+                        result = {'success': False, 'error': f'Неподдерживаемый кодек: {codec}'}
+                else:
+                    if codec == 'GIF':
+                        result = media.decode_gif(self.media_input_path, self.media_output_path)
+                    elif codec == 'MP4':
+                        result = media.decode_mp4(self.media_input_path, self.media_output_path)
+                    elif codec == 'MP3':
+                        result = media.decode_mp3(self.media_input_path, self.media_output_path)
+                    else:
+                        result = {'success': False, 'error': f'Неподдерживаемый кодек: {codec}'}
+
+                self.root.after(0, lambda: self._media_callback(result))
+            except Exception as e:
+                self.root.after(0, lambda: self._media_callback({'success': False, 'error': str(e)}))
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _media_callback(self, result):
+        if result['success']:
+            self.media_status_label.config(text="✅ Готово")
+            messagebox.showinfo("Готово", f"✅ Успех!\nСохранено: {result['output_path']}")
+        else:
+            self.media_status_label.config(text="❌ Ошибка")
+            messagebox.showerror("Ошибка", f"{result.get('error')}")
+
+    # ─── Scanner ────────────────────────────────────────────────────
+
+    def _scan_select_file(self):
+        path = filedialog.askopenfilename(title="Выберите изображение для сканирования",
+                                          filetypes=[("Image files", "*.png *.webp *.bmp *.tiff")])
+        if path:
+            self.scan_file_path = path
+            self.scan_file_label.config(text=os.path.basename(path))
+            self.scan_status_label.config(text="Готов")
+
+    def _scan_process(self):
+        if not hasattr(self, 'scan_file_path') or not self.scan_file_path:
+            messagebox.showwarning("Предупреждение", "Сначала выберите файл для сканирования")
+            return
+
+        self.scan_result_text.delete(1.0, tk.END)
+        self.scan_result_text.insert(tk.END, "Сканирование...\n")
+        self.scan_status_label.config(text="⏳ Сканирую...")
+
+        def task():
+            try:
+                results = self.core.scan_for_header(
+                    self.scan_file_path,
+                    scan_alpha=self.scan_alpha_var.get(),
+                    scan_rgb=self.scan_rgb_var.get(),
+                    max_layers=self.scan_layers_var.get()
+                )
+                self.root.after(0, lambda: self._scan_callback(results))
+            except Exception as e:
+                self.root.after(0, lambda: self._scan_callback([], str(e)))
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _scan_callback(self, results, error=None):
+        self.scan_result_text.delete(1.0, tk.END)
+        if error:
+            self.scan_result_text.insert(tk.END, f"Ошибка: {error}\n")
+            self.scan_status_label.config(text="❌ Ошибка")
+            return
+
+        if not results:
+            self.scan_result_text.insert(tk.END, "❌ Заголовков ColorCrypt не обнаружено.\n")
+            self.scan_result_text.insert(tk.END, "\nВозможные причины:\n")
+            self.scan_result_text.insert(tk.END, "  • Файл не содержит скрытых данных\n")
+            self.scan_result_text.insert(tk.END, "  • Данные скрыты с другой LSB-глубиной (>8)\n")
+            self.scan_result_text.insert(tk.END, "  • Файл был пережат с потерями\n")
+            self.scan_status_label.config(text="❌ Ничего не найдено")
+        else:
+            self.scan_result_text.insert(tk.END, f"✅ Найдено заголовков: {len(results)}\n\n")
+            for r in results:
+                htype = r['header'].get('type', '?')
+                self.scan_result_text.insert(tk.END, f"  Канал: {r['channel']}\n")
+                self.scan_result_text.insert(tk.END, f"  LSB-слоёв: {r['bits']}\n")
+                self.scan_result_text.insert(tk.END, f"  Тип: {htype}\n")
+                self.scan_result_text.insert(tk.END, f"  Сигнатура: {r['header']['signature']}\n")
+                self.scan_result_text.insert(tk.END, f"  Версия: {r['header']['version']}\n")
+                self.scan_result_text.insert(tk.END, "  ---\n")
+            self.scan_status_label.config(text=f"✅ Найдено {len(results)} заголовков")
 
 def main():
     if HAS_DND:
