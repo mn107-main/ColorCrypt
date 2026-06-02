@@ -75,8 +75,9 @@ python core.py scan image.png --scan-alpha --scan-rgb --scan-layers 2
 
 ### CLI Arguments
 
+
 | Argument | Description |
-|---|---|---|
+|----------|-------------|
 | `mode` | `encode`, `decode`, `iii-encode`, `iii-decode`, `scan` |
 | `input` | Input file path |
 | `input2` | Second input (secret image for `iii-encode`) |
