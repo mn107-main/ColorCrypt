@@ -18,6 +18,12 @@ from PIL import Image
 
 CURRENT_VERSION = "1"
 
+# ─── Constants ─────────────────────────────────────────────────────
+MAX_IMAGE_WIDTH = 4096
+PBKDF2_ITERATIONS = 100000
+MAX_HEADER_LENGTH = 65536
+HEADER_SIZE_BYTES = 4
+
 MODE_MONO = "mono"
 MODE_RGB = "rgb"
 MODE_RGBA = "rgba"
@@ -71,8 +77,6 @@ class ColorCryptCore:
         self.preserve_filename = True
         self.lsb_bits = 0
 
-        self._data_cache = {}
-
     def _log_debug(self, message):
         if self.debug_callback:
             self.debug_callback(message)
@@ -107,7 +111,7 @@ class ColorCryptCore:
         if salt is None:
             salt = get_random_bytes(32)
         self.salt = salt
-        key = PBKDF2(password, salt, dkLen=32, count=100000)
+        key = PBKDF2(password, salt, dkLen=32, count=PBKDF2_ITERATIONS)
         return key, salt
 
     def encrypt_data_gcm(self, data):
@@ -183,34 +187,6 @@ class ColorCryptCore:
             return 'A'
         return 'R'
 
-    def prepare_pixel_array(self, data_bytes, channels):
-        total_bytes = len(data_bytes)
-
-        if channels == 1:
-            pixels = list(data_bytes)
-            pixels_needed = total_bytes
-        elif channels == 3:
-            arr = np.frombuffer(data_bytes, dtype=np.uint8)
-            remainder = total_bytes % 3
-            if remainder:
-                pad = 3 - remainder
-                arr = np.pad(arr, (0, pad), constant_values=0)
-            pixels = list(map(tuple, arr.reshape(-1, 3)))
-            pixels_needed = (total_bytes + 2) // 3
-        else:
-            arr = np.frombuffer(data_bytes, dtype=np.uint8)
-            remainder = total_bytes % 4
-            if remainder:
-                pad = 4 - remainder
-                arr = np.pad(arr, (0, pad), constant_values=0)
-            arr = arr.reshape(-1, 4)
-            if remainder:
-                arr[-1, 3] = 255
-            pixels = list(map(tuple, arr))
-            pixels_needed = (total_bytes + 3) // 4
-
-        return pixels, pixels_needed
-
     def _decode_lsb_payload(self, data_bytes, start_offset, lsb):
         remaining = data_bytes[start_offset:]
         if lsb == 1:
@@ -234,7 +210,7 @@ class ColorCryptCore:
             extracted_bits[2::4] = (vals >> 2) & 1
             extracted_bits[3::4] = (vals >> 3) & 1
         else:
-            return bytes(remaining)
+            return remaining.tobytes()
         return np.packbits(extracted_bits).tobytes()
 
     def encode_chunked(self, full_data, output_dir, base_name, original_name):
@@ -334,17 +310,12 @@ class ColorCryptCore:
                 total_channels_needed = header_channels_needed + payload_channels_needed
                 pixels_needed = (total_channels_needed + channels - 1) // channels
 
-                img_width = min(pixels_needed, 4096)
+                img_width = min(pixels_needed, MAX_IMAGE_WIDTH)
                 img_height = (pixels_needed + img_width - 1) // img_width
 
-                if channels == 1:
-                    img = Image.new('L', (img_width, img_height), 0)
-                elif channels == 4:
-                    img = Image.new('RGBA', (img_width, img_height), (0, 0, 0, 255))
-                else:
-                    img = Image.new('RGB', (img_width, img_height), (0, 0, 0))
-
-                flat = np.array(img, dtype=np.uint8).reshape(-1)
+                flat = np.random.randint(0, 256, size=img_height * img_width * channels, dtype=np.uint8)
+                if channels == 4:
+                    flat[3::4] = 255
 
                 flat[:header_channels_needed] = np.frombuffer(header_data, dtype=np.uint8)
 
@@ -369,19 +340,25 @@ class ColorCryptCore:
 
                 img = Image.fromarray(flat.reshape(img_height, img_width, channels) if channels > 1 else flat.reshape(img_height, img_width))
             else:
-                pixels, pixels_needed = self.prepare_pixel_array(full_data, channels)
+                arr = np.frombuffer(full_data, dtype=np.uint8)
+                if len(arr) % channels:
+                    arr = np.pad(arr, (0, channels - len(arr) % channels), constant_values=0)
+                pixels_needed = (len(full_data) + channels - 1) // channels
 
-                img_width = min(pixels_needed, 4096)
+                img_width = min(pixels_needed, MAX_IMAGE_WIDTH)
                 img_height = (pixels_needed + img_width - 1) // img_width
 
-                if channels == 1:
-                    img = Image.new('L', (img_width, img_height), 0)
-                elif channels == 4:
-                    img = Image.new('RGBA', (img_width, img_height), (0, 0, 0, 255))
-                else:
-                    img = Image.new('RGB', (img_width, img_height), (0, 0, 0))
+                needed = img_width * img_height * channels
+                if len(arr) < needed:
+                    arr = np.pad(arr, (0, needed - len(arr)), constant_values=0)
+                arr = arr[:needed].reshape(img_height, img_width, channels)
 
-                img.putdata(pixels)
+                if channels == 1:
+                    img = Image.fromarray(arr[:, :, 0], mode='L')
+                elif channels == 4:
+                    img = Image.fromarray(arr, mode='RGBA')
+                else:
+                    img = Image.fromarray(arr, mode='RGB')
 
             if output_dir is None:
                 output_dir = self.output_dir or Path.cwd()
@@ -449,9 +426,13 @@ class ColorCryptCore:
             if len(data_bytes) < 4:
                 raise ValueError("Файл слишком мал или повреждён")
 
-            header_length = int.from_bytes(bytes(data_bytes[:4]), 'big')
+            header_length = int.from_bytes(bytes(data_bytes[:HEADER_SIZE_BYTES]), 'big')
 
-            if header_length + 4 > len(data_bytes):
+            if header_length < HEADER_SIZE_BYTES or header_length > MAX_HEADER_LENGTH:
+                self._log_debug(f"Некорректная длина заголовка ({header_length}), попытка legacy...\n")
+                return self._decode_legacy(data_bytes, img, output_dir, password, key)
+
+            if header_length + HEADER_SIZE_BYTES > len(data_bytes):
                 self._log_debug("Попытка декодирования в старом формате...\n")
                 return self._decode_legacy(data_bytes, img, output_dir, password, key)
 
@@ -729,6 +710,11 @@ class ColorCryptCore:
         result = self.encode_single(data, output_dir, output_name, original_filename)
         return result
 
+    def clear_sensitive_data(self):
+        self.password = None
+        self.key = None
+        self.salt = None
+
     def cancel(self):
         self.cancel_event.set()
 
@@ -764,13 +750,16 @@ class ColorCryptCore:
                 flat = np.array(img, dtype=np.uint8).reshape(-1)
             else:
                 flat = np.array(img.convert('RGB'), dtype=np.uint8).reshape(-1)
-            data_bytes = flat[:4096]
-            if len(data_bytes) < 4:
+            header_scan_bytes = min(MAX_HEADER_LENGTH + HEADER_SIZE_BYTES, len(flat))
+            data_bytes = flat[:header_scan_bytes]
+            if len(data_bytes) < HEADER_SIZE_BYTES:
                 return False
-            header_length = int.from_bytes(bytes(data_bytes[:4]), 'big')
-            if header_length + 4 > len(data_bytes):
+            header_length = int.from_bytes(bytes(data_bytes[:HEADER_SIZE_BYTES]), 'big')
+            if header_length < HEADER_SIZE_BYTES or header_length > MAX_HEADER_LENGTH:
                 return False
-            header_bytes = bytes(data_bytes[4:4+header_length])
+            if header_length + HEADER_SIZE_BYTES > len(data_bytes):
+                return False
+            header_bytes = bytes(data_bytes[HEADER_SIZE_BYTES:HEADER_SIZE_BYTES+header_length])
             try:
                 header = header_bytes.decode('ascii', errors='ignore')
                 return 'ENC:' in header
@@ -836,14 +825,11 @@ class ColorCryptCore:
             data_bits = np.unpackbits(np.frombuffer(data_to_hide, dtype=np.uint8))
 
             if use_alpha:
-                alpha_view = flat[:, 3]
-                for i in range(min(len(data_bits), len(alpha_view))):
-                    alpha_view[i] = (alpha_view[i] & 0xFE) | int(data_bits[i])
+                n = min(len(data_bits), len(flat))
+                flat[:n, 3] = (flat[:n, 3] & 0xFE) | data_bits[:n]
             else:
-                for i in range(min(len(data_bits), len(flat) * 3)):
-                    px_idx = i // 3
-                    ch_idx = i % 3
-                    flat[px_idx, ch_idx] = (flat[px_idx, ch_idx] & 0xFE) | int(data_bits[i])
+                n = min(len(data_bits), len(flat) * 3)
+                flat[:, :3].reshape(-1)[:n] = (flat[:, :3].reshape(-1)[:n] & 0xFE) | data_bits[:n]
 
             result = Image.fromarray(container_arr, 'RGBA')
             result.save(output_path, format='PNG', optimize=True)

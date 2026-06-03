@@ -57,6 +57,32 @@ class MediaSteganography:
         if self.progress_callback:
             self.progress_callback(cur, total, msg)
 
+    @staticmethod
+    def _extract_header_and_data(all_bits):
+        header_bits = all_bits[:32]
+        data_len = 0
+        for i in range(4):
+            byte = 0
+            for j in range(8):
+                if i * 8 + j < len(header_bits):
+                    byte |= (header_bits[i * 8 + j] & 1) << j
+            data_len = (data_len << 8) | byte
+
+        needed_bits = 32 + data_len * 8
+        if needed_bits > len(all_bits):
+            raise ValueError(f"Недостаточно данных: нужно {needed_bits} бит, есть {len(all_bits)}")
+
+        data_bytes = bytearray()
+        for i in range(data_len):
+            byte = 0
+            for j in range(8):
+                bit_idx = 32 + i * 8 + j
+                if bit_idx < len(all_bits):
+                    byte |= (all_bits[bit_idx] & 1) << j
+            data_bytes.append(byte)
+
+        return bytes(data_bytes)
+
     def encode_gif(self, input_gif_path, data, output_path):
         if not HAS_IMAGEIO:
             raise ImportError("Установите imageio: pip install imageio imageio-ffmpeg")
@@ -107,33 +133,13 @@ class MediaSteganography:
 
         reader = imageio.get_reader(input_gif_path)
         all_bits = []
-        for frame in reader:
+        for fi, frame in enumerate(reader):
             flat = frame.reshape(-1)
             for px in flat:
                 all_bits.append(px & 1)
         reader.close()
 
-        header_bits = all_bits[:32]
-        data_len = 0
-        for i in range(4):
-            byte = 0
-            for j in range(8):
-                if i * 8 + j < len(header_bits):
-                    byte |= (header_bits[i * 8 + j] & 1) << j
-            data_len = (data_len << 8) | byte
-
-        needed_bits = 32 + data_len * 8
-        if needed_bits > len(all_bits):
-            raise ValueError(f"Недостаточно данных: нужно {needed_bits} бит, есть {len(all_bits)}")
-
-        data_bytes = bytearray()
-        for i in range(data_len):
-            byte = 0
-            for j in range(8):
-                bit_idx = 32 + i * 8 + j
-                if bit_idx < len(all_bits):
-                    byte |= (all_bits[bit_idx] & 1) << j
-            data_bytes.append(byte)
+        data_bytes = self._extract_header_and_data(all_bits)
 
         with open(output_path, 'wb') as f:
             f.write(data_bytes)
@@ -165,25 +171,27 @@ class MediaSteganography:
             for b in range(8):
                 bits.append((byte >> b) & 1)
 
+        if not all_frames:
+            raise ValueError("Видео не содержит кадров")
+
         frame_h, frame_w, frame_c = all_frames[0].shape
-        uv_bits_per_frame = (frame_h // 2) * (frame_w // 2) * 2
-        total_capacity = len(all_frames) * uv_bits_per_frame
+        # Embed only in G and B channels (indices 1, 2) — less perceptible than R
+        channels_per_pixel = 2
+        pixels_per_frame = frame_h * frame_w * channels_per_pixel
+        total_capacity = len(all_frames) * pixels_per_frame
 
         if len(bits) > total_capacity:
             raise ValueError(f"Данные слишком велики: нужно {len(bits)} бит, доступно {total_capacity}")
 
         bit_idx = 0
         for fi, frame in enumerate(all_frames):
-            if frame_c >= 3:
-                yuv = frame.copy()
-                uv_flat = yuv[:, :, 1:3].reshape(-1)
-                for pi in range(min(len(uv_flat), uv_bits_per_frame)):
-                    if bit_idx >= len(bits):
-                        break
-                    uv_flat[pi] = (uv_flat[pi] & 0xFE) | bits[bit_idx]
-                    bit_idx += 1
-                yuv[:, :, 1:3] = uv_flat.reshape(frame_h, frame_w, 2)
-                all_frames[fi] = yuv
+            color_flat = frame[:, :, 1:3].reshape(-1)
+            for pi in range(min(len(color_flat), pixels_per_frame)):
+                if bit_idx >= len(bits):
+                    break
+                color_flat[pi] = (color_flat[pi] & 0xFE) | bits[bit_idx]
+                bit_idx += 1
+            all_frames[fi][:, :, 1:3] = color_flat.reshape(frame_h, frame_w, channels_per_pixel)
 
             self._progress(fi, len(all_frames), f"Кадр {fi+1}/{len(all_frames)}")
 
@@ -191,9 +199,8 @@ class MediaSteganography:
         i3.imwrite(str(output_path), all_frames, fps=fps, codec='libx264',
                    pixel_format='yuv420p', output_params=['-preset', 'fast'])
 
-        for f in frames_dir.iterdir():
-            f.unlink()
-        temp_dir.rmdir()
+        import shutil
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
         result = {'success': True, 'output_path': output_path, 'frames': len(all_frames)}
 
@@ -221,9 +228,9 @@ class MediaSteganography:
         reader = imageio.get_reader(input_video_path)
         all_bits = []
         for frame in reader:
-            yuv = frame
-            uv_flat = yuv[:, :, 1:3].reshape(-1)
-            for px in uv_flat:
+            # Read from G and B channels (indices 1, 2), matching encode_mp4
+            color_flat = frame[:, :, 1:3].reshape(-1)
+            for px in color_flat:
                 all_bits.append(px & 1)
         reader.close()
 
@@ -300,27 +307,7 @@ class MediaSteganography:
             for b in range(8):
                 all_bits.append((byte >> b) & 1)
 
-        header_bits = all_bits[:32]
-        data_len = 0
-        for i in range(4):
-            byte = 0
-            for j in range(8):
-                if i * 8 + j < len(header_bits):
-                    byte |= (header_bits[i * 8 + j] & 1) << j
-            data_len = (data_len << 8) | byte
-
-        needed_bits = 32 + data_len * 8
-        if needed_bits > len(all_bits):
-            raise ValueError(f"Недостаточно данных: нужно {needed_bits} бит, есть {len(all_bits)}")
-
-        data_bytes = bytearray()
-        for i in range(data_len):
-            byte = 0
-            for j in range(8):
-                bit_idx = 32 + i * 8 + j
-                if bit_idx < len(all_bits):
-                    byte |= (all_bits[bit_idx] & 1) << j
-            data_bytes.append(byte)
+        data_bytes = self._extract_header_and_data(all_bits)
 
         with open(output_path, 'wb') as f:
             f.write(data_bytes)
