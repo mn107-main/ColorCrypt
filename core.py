@@ -18,7 +18,7 @@ from Crypto.Random import get_random_bytes
 from argon2.low_level import hash_secret_raw, Type
 from PIL import Image
 
-CURRENT_VERSION = "1"
+CURRENT_VERSION = "2.2.0"
 
 # ─── Constants ─────────────────────────────────────────────────────
 MAX_IMAGE_WIDTH = 4096
