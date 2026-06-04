@@ -18,7 +18,7 @@ from Crypto.Random import get_random_bytes
 from argon2.low_level import hash_secret_raw, Type
 from PIL import Image
 
-CURRENT_VERSION = "2.2.0"
+CURRENT_VERSION = "2.3.0"
 
 # ─── Constants ─────────────────────────────────────────────────────
 MAX_IMAGE_WIDTH = 4096
@@ -88,6 +88,7 @@ class ColorCryptCore:
         self.k_lsb = None
         self.adaptive_lsb = False
         self.zip_mode = False
+        self.ecc_enabled = False
 
     def _log_debug(self, message):
         if self.debug_callback:
@@ -103,7 +104,8 @@ class ColorCryptCore:
                      output_format="PNG", make_square=False, output_dir=None,
                      encode_mode="base64", chunk_mode=False, chunk_size="50MB",
                      preserve_filename=True, lsb_bits=0, k_lsb=None,
-                     adaptive_lsb=False, zip_mode=False, salt=None):
+                     adaptive_lsb=False, zip_mode=False, salt=None,
+                     ecc_enabled=False):
         self.compress_enabled = compress_enabled
         self.compress_level = compress_level
         self.channel_mode = channel_mode
@@ -127,6 +129,7 @@ class ColorCryptCore:
             self.k_lsb = k_lsb
         self.adaptive_lsb = adaptive_lsb
         self.zip_mode = zip_mode
+        self.ecc_enabled = ecc_enabled
 
     def generate_key_from_password(self, password, salt=None):
         if salt is None:
@@ -247,7 +250,31 @@ class ColorCryptCore:
         return ['R', 'G', 'B']
 
     @staticmethod
-    def _adaptive_k_lsb(channels_n):
+    def _adaptive_k_lsb(channels_n, image_array=None):
+        if image_array is not None and channels_n != ['L']:
+            result = {}
+            channel_indices = {'R': 0, 'G': 1, 'B': 2, 'A': 3}
+            variances = {}
+            for ch_name in channels_n:
+                idx = channel_indices.get(ch_name)
+                if idx is not None and image_array.ndim == 3 and idx < image_array.shape[2]:
+                    ch_data = image_array[:, :, idx]
+                    variances[ch_name] = float(np.var(ch_data))
+            if variances:
+                max_var = max(variances.values())
+                if max_var > 0:
+                    for ch_name in channels_n:
+                        norm_var = variances.get(ch_name, 0) / max_var
+                        if norm_var > 0.7:
+                            result[ch_name] = 3
+                        elif norm_var > 0.4:
+                            result[ch_name] = 2
+                        else:
+                            result[ch_name] = 1
+                    if 'A' in result:
+                        result['A'] = max(1, result.get('A', 1))
+                    return result
+
         if channels_n == ['L']:
             return {'L': 2}
         elif channels_n == ['R', 'G', 'B', 'A']:
@@ -392,12 +419,19 @@ class ColorCryptCore:
                 if encrypted_data:
                     data_bytes = encrypted_data
 
+            if self.ecc_enabled:
+                data_bytes = self.ecc_encode(data_bytes)
+                self._log_debug(f"ECC применён: {len(data_bytes)} байт\n")
+
             header_parts = [
                 f"V{CURRENT_VERSION}",
                 "C" if self.compress_enabled else "N",
                 mode_char,
                 f"EM:{self.encode_mode}"
             ]
+
+            if self.ecc_enabled:
+                header_parts.append("ECC:1")
 
             if self.encryption_enabled and encryption_metadata:
                 header_parts.append(f"ENC:{encryption_metadata}")
@@ -438,13 +472,18 @@ class ColorCryptCore:
                 payload_data = full_data[header_byte_count:]
                 payload_bits = np.unpackbits(np.frombuffer(payload_data, dtype=np.uint8))
 
+                if not self.k_lsb and lsb > 1:
+                    remainder = len(payload_bits) % lsb
+                    if remainder:
+                        payload_bits = np.pad(payload_bits, (0, lsb - remainder), 'constant', constant_values=0)
+
                 header_channels_needed = header_byte_count
                 if self.k_lsb:
                     ch_sum = sum(self.k_lsb.get(chn, 1) for chn in channels_n)
                     pixels_for_payload = int(np.ceil(len(payload_bits) / ch_sum))
                     payload_channels_needed = pixels_for_payload * len(channels_n)
                 else:
-                    payload_channels_needed = (len(payload_bits) + lsb - 1) // lsb
+                    payload_channels_needed = len(payload_bits) // lsb
                 total_channels_needed = header_channels_needed + payload_channels_needed
                 pixels_needed = (total_channels_needed + channels - 1) // channels
 
@@ -454,6 +493,13 @@ class ColorCryptCore:
                 flat = np.random.randint(0, 256, size=img_height * img_width * channels, dtype=np.uint8)
                 if channels == 4:
                     flat[3::4] = 255
+
+                if self.adaptive_lsb and self.k_lsb:
+                    reshaped = flat.reshape(img_height, img_width, channels)
+                    channels_n = self._channel_names(self.channel_mode)
+                    adaptive = self._adaptive_k_lsb(channels_n, reshaped)
+                    self.k_lsb = adaptive
+                    self._log_debug(f"Noise-adaptive K-LSB: {adaptive}\n")
 
                 flat[:header_channels_needed] = np.frombuffer(header_data, dtype=np.uint8)
 
@@ -591,12 +637,100 @@ class ColorCryptCore:
 
             header_length = int.from_bytes(bytes(data_bytes[:HEADER_SIZE_BYTES]), 'big')
 
-            if header_length < HEADER_SIZE_BYTES or header_length > MAX_HEADER_LENGTH:
-                self._log_debug(f"Некорректная длина заголовка ({header_length}), попытка legacy...\n")
-                return self._decode_legacy(data_bytes, img, output_dir, password, key)
+            if header_length < HEADER_SIZE_BYTES or header_length > MAX_HEADER_LENGTH or header_length + HEADER_SIZE_BYTES > len(data_bytes):
+                self._log_debug(f"Некорректная длина заголовка ({header_length}), попытка авто-детекции...\n")
+                detected = self.auto_detect_params(img)
+                if detected:
+                    self._log_debug(f"Авто-детекция: LSB={detected.get('lsb_bits')}, K-LSB={detected.get('k_lsb')}\n")
+                    lsb_bits = detected.get('lsb_bits', 0)
+                    k_lsb = detected.get('k_lsb')
+                    header_text = detected['header']
 
-            if header_length + HEADER_SIZE_BYTES > len(data_bytes):
-                self._log_debug("Попытка декодирования в старом формате...\n")
+                    compressed = False
+                    encode_mode = "base64"
+                    encryption_metadata = None
+                    sha256 = None
+                    expected_len = None
+                    ecc_enabled = False
+
+                    for part in header_text.split('|'):
+                        if part == 'C':
+                            compressed = True
+                        elif part == 'N':
+                            compressed = False
+                        elif part == 'ECC:1':
+                            ecc_enabled = True
+                        elif part.startswith('EM:'):
+                            encode_mode = part[3:]
+                        elif part.startswith('ENC:'):
+                            encryption_metadata = part[4:]
+                        elif part.startswith('SHA256:'):
+                            sha256 = part[7:]
+                        elif part.startswith('LEN:'):
+                            expected_len = int(part[4:])
+
+                    arr2 = np.array(img, dtype=np.uint8)
+                    flat2 = arr2.reshape(-1)
+                    if lsb_bits > 0:
+                        header_byte_count = 4 + len(header_text.encode('ascii'))
+                        payload_bytes = self._decode_lsb_payload(flat2, header_byte_count, lsb_bits)
+                    elif k_lsb:
+                        ch_mode = MODE_RGB
+                        if img.mode == 'RGBA':
+                            ch_mode = MODE_RGBA
+                        elif img.mode == 'L':
+                            ch_mode = MODE_MONO
+                        channels_n = self._channel_names(ch_mode)
+                        header_byte_count = 4 + len(header_text.encode('ascii'))
+                        offset_pixel = header_byte_count // len(channels_n)
+                        if header_byte_count % len(channels_n):
+                            offset_pixel += 1
+                        payload_start = offset_pixel * len(channels_n)
+                        payload_bytes = self._decode_lsb_payload_k_lsb(flat2, payload_start, k_lsb, channels_n)
+                    else:
+                        return self._decode_legacy(data_bytes, img, output_dir, password, key)
+
+                    if expected_len and expected_len < len(payload_bytes):
+                        payload_bytes = payload_bytes[:expected_len]
+                    data_to_process = payload_bytes
+
+                    if encryption_metadata:
+                        self._update_progress(60, 100, "Расшифровка...")
+                        decrypted = self.decrypt_data(data_to_process, encryption_metadata, password, key)
+                        if decrypted is None:
+                            raise ValueError("Неверный пароль или повреждённые данные")
+                        data_to_process = decrypted
+
+                    if compressed:
+                        self._update_progress(70, 100, "Распаковка...")
+                        data_to_process = self.decompress_data(data_to_process)
+
+                    if ecc_enabled:
+                        self._update_progress(75, 100, "Коррекция ошибок...")
+                        data_to_process = self.ecc_decode(data_to_process)
+
+                    self._update_progress(80, 100, "Финальная обработка...")
+                    final_data = base64.b64decode(data_to_process)
+
+                    if sha256 and self.integrity_enabled:
+                        calc_sha = hashlib.sha256(final_data).hexdigest()
+                        if calc_sha != sha256:
+                            self._log_debug(f"⚠️ SHA-256 не совпадает!\n")
+                        else:
+                            self._log_debug(f"✅ SHA-256 совпадает\n")
+
+                    if output_dir is None:
+                        output_dir = self.output_dir or str(Path.cwd())
+                    os.makedirs(output_dir, exist_ok=True)
+
+                    output = os.path.join(output_dir, f"decoded_{int(time.time())}")
+                    with open(output, 'wb') as f:
+                        f.write(final_data)
+
+                    self._update_progress(100, 100, "Готово!")
+                    return {'success': True, 'output_path': output, 'size': len(final_data), 'elapsed': 0}
+
+                self._log_debug("Авто-детекция не удалась, попытка legacy...\n")
                 return self._decode_legacy(data_bytes, img, output_dir, password, key)
 
             header_bytes = bytes(data_bytes[4:4+header_length])
@@ -617,6 +751,7 @@ class ColorCryptCore:
             original_name = None
             lsb_bits = 0
             k_lsb = None
+            ecc_enabled = False
 
             parts = header.split('|')
             for part in parts:
@@ -624,6 +759,8 @@ class ColorCryptCore:
                     compressed = True
                 elif part == 'N':
                     compressed = False
+                elif part == 'ECC:1':
+                    ecc_enabled = True
                 elif part.startswith('EM:'):
                     encode_mode = part[3:]
                 elif part.startswith('ENC:'):
@@ -673,15 +810,20 @@ class ColorCryptCore:
 
             data_to_process = payload_bytes
 
+            if ecc_enabled:
+                self._update_progress(60, 100, "Коррекция ошибок...")
+                data_to_process = self.ecc_decode(data_to_process)
+                self._log_debug(f"ECC декодировано: {len(data_to_process)} байт\n")
+
             if encryption_metadata:
-                self._update_progress(60, 100, "Расшифровка...")
+                self._update_progress(65, 100, "Расшифровка...")
                 decrypted = self.decrypt_data(data_to_process, encryption_metadata, password, key)
                 if decrypted is None:
                     raise ValueError("Неверный пароль или повреждённые данные")
                 data_to_process = decrypted
 
             if compressed:
-                self._update_progress(70, 100, "Распаковка...")
+                self._update_progress(75, 100, "Распаковка...")
                 data_to_process = self.decompress_data(data_to_process)
 
             self._update_progress(80, 100, "Финальная обработка...")
@@ -889,6 +1031,57 @@ class ColorCryptCore:
             import shutil
             shutil.rmtree(tmp, ignore_errors=True)
 
+    # ─── ECC (Error Correction Codes) ──────────────────────────────────
+
+    ECC_BLOCK_SIZE = 15
+    ECC_PARITY_SIZE = 1
+
+    def ecc_encode(self, data):
+        block_size = self.ECC_BLOCK_SIZE
+        result = bytearray()
+        for i in range(0, len(data), block_size):
+            block = data[i:i + block_size]
+            parity = 0
+            for b in block:
+                parity ^= b
+            result.extend(block)
+            result.append(parity)
+        return bytes(result)
+
+    def ecc_decode(self, data):
+        block_size = self.ECC_BLOCK_SIZE
+        result = bytearray()
+        i = 0
+        while i < len(data):
+            if i + block_size + self.ECC_PARITY_SIZE <= len(data):
+                block = data[i:i + block_size]
+                stored_parity = data[i + block_size]
+                computed_parity = 0
+                for b in block:
+                    computed_parity ^= b
+                if stored_parity != computed_parity:
+                    for bit_pos in range(8):
+                        for byte_pos in range(len(block)):
+                            test_block = bytearray(block)
+                            test_block[byte_pos] ^= (1 << bit_pos)
+                            test_parity = 0
+                            for b in test_block:
+                                test_parity ^= b
+                            if test_parity == stored_parity:
+                                block = bytes(test_block)
+                                break
+                        else:
+                            continue
+                        break
+                result.extend(block)
+                i += block_size + self.ECC_PARITY_SIZE
+            else:
+                remaining = len(data) - i
+                if remaining > self.ECC_PARITY_SIZE:
+                    result.extend(data[i:i + remaining - self.ECC_PARITY_SIZE])
+                i = len(data)
+        return bytes(result)
+
     def compress_data(self, data):
         if not self.compress_enabled:
             return data
@@ -972,6 +1165,62 @@ class ColorCryptCore:
             result = self.decode(filepath, output_dir, password)
             results.append(result)
         return results
+
+    def auto_detect_params(self, img):
+        try:
+            arr = np.array(img, dtype=np.uint8)
+            flat = arr.reshape(-1)
+            channels = 1
+            if img.mode == 'RGB':
+                channels = 3
+            elif img.mode == 'RGBA':
+                channels = 4
+
+            for lsb in range(1, 5):
+                header_len = int.from_bytes(bytes(flat[:4] & ((1 << lsb) - 1) if lsb > 0 else flat[:4]), 'big')
+                if 4 < header_len < 2048 and header_len + 4 <= len(flat):
+                    hdr_chunk = flat[4:4 + header_len]
+                    if lsb > 0:
+                        hdr_chunk = hdr_chunk & ((1 << lsb) - 1)
+                        extracted = np.unpackbits(hdr_chunk).tobytes()[:header_len]
+                    else:
+                        extracted = bytes(hdr_chunk)
+                    try:
+                        hdr_text = extracted.decode('ascii')
+                        if hdr_text.startswith('V') and 'LEN:' in hdr_text:
+                            self._log_debug(f"Auto-detected LSB={lsb}, header={hdr_text[:80]}...\n")
+                            return {'lsb_bits': lsb, 'header': hdr_text}
+                    except:
+                        pass
+
+            if channels > 2:
+                for depth_r in range(1, 5):
+                    for depth_g in range(1, 5):
+                        for depth_b in range(1, 5):
+                            k_lsb = {'R': depth_r, 'G': depth_g, 'B': depth_b}
+                            if channels == 4:
+                                k_lsb['A'] = 1
+                            try:
+                                channels_n = ['R', 'G', 'B']
+                                if channels == 4:
+                                    channels_n = ['R', 'G', 'B', 'A']
+                                offset_pixel = 4 // channels
+                                if 4 % channels:
+                                    offset_pixel += 1
+                                payload_start = offset_pixel * channels
+                                hdr_bytes = self._decode_lsb_payload_k_lsb(flat, 0, k_lsb, channels_n)
+                                hdr_len = int.from_bytes(hdr_bytes[:4], 'big')
+                                if 4 < hdr_len < 2048:
+                                    hdr_text = hdr_bytes[4:4 + hdr_len].decode('ascii', errors='ignore')
+                                    if hdr_text.startswith('V') and 'LEN:' in hdr_text:
+                                        self._log_debug(f"Auto-detected K-LSB R={depth_r} G={depth_g} B={depth_b}, header={hdr_text[:80]}...\n")
+                                        return {'k_lsb': k_lsb, 'header': hdr_text}
+                            except:
+                                pass
+
+            return None
+        except:
+            return None
 
     def check_encryption(self, filepath):
         try:
@@ -1368,6 +1617,8 @@ def main_cli():
     parser.add_argument('--scan-layers', type=int, default=4, help='Максимум LSB-слоёв для сканирования')
     parser.add_argument('--salt', type=str, default=None,
                         help='Соль в hex (только с --password; по умолчанию случайная)')
+    parser.add_argument('--ecc', action='store_true', default=False,
+                        help='Включить коррекцию ошибок (ECC) для JPEG')
 
     args = parser.parse_args()
 
@@ -1397,7 +1648,8 @@ def main_cli():
         chunk_size=args.chunk_size,
         preserve_filename=not args.no_preserve_name,
         lsb_bits=args.lsb_bits,
-        salt=salt
+        salt=salt,
+        ecc_enabled=args.ecc
     )
 
     if args.mode == 'encode':

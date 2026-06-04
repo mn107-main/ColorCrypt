@@ -7,6 +7,7 @@ from pathlib import Path
 HAS_FFMPEG = False
 HAS_PYDUB = False
 HAS_IMAGEIO = False
+HAS_WAVE = False
 
 try:
     import imageio.v3 as iio
@@ -18,6 +19,12 @@ except ImportError:
 try:
     from pydub import AudioSegment
     HAS_PYDUB = True
+except ImportError:
+    pass
+
+try:
+    import wave
+    HAS_WAVE = True
 except ImportError:
     pass
 
@@ -42,6 +49,9 @@ if HAS_FFMPEG:
 if HAS_PYDUB:
     if 'MP3' not in AVAILABLE_CODECS:
         AVAILABLE_CODECS.append('MP3')
+if HAS_WAVE:
+    AVAILABLE_CODECS.append('WAV')
+    AVAILABLE_CODECS.append('FLAC')
 
 
 class MediaSteganography:
@@ -313,6 +323,103 @@ class MediaSteganography:
             f.write(data_bytes)
 
         return {'success': True, 'output_path': output_path, 'size': len(data_bytes)}
+
+    def encode_wav(self, input_wav_path, data, output_path):
+        if not HAS_WAVE:
+            raise ImportError("Модуль wave не доступен")
+
+        import wave
+
+        with wave.open(input_wav_path, 'rb') as wf:
+            params = wf.getparams()
+            frames = bytearray(wf.readframes(wf.getnframes()))
+
+        data_bytes = data if isinstance(data, bytes) else data.encode('utf-8')
+        header = struct.pack('>I', len(data_bytes))
+        payload = header + data_bytes
+        bits = []
+        for byte in payload:
+            for b in range(8):
+                bits.append((byte >> b) & 1)
+
+        max_bits = len(frames)
+        if len(bits) > max_bits:
+            raise ValueError(f"Данные слишком велики: нужно {len(bits)} бит, доступно {max_bits}")
+
+        for i in range(len(bits)):
+            frames[i] = (frames[i] & 0xFE) | bits[i]
+
+        with wave.open(output_path, 'wb') as wf:
+            wf.setparams(params)
+            wf.writeframes(bytes(frames))
+
+        return {'success': True, 'output_path': output_path, 'size': len(data_bytes)}
+
+    def decode_wav(self, input_wav_path, output_path):
+        if not HAS_WAVE:
+            raise ImportError("Модуль wave не доступен")
+
+        import wave
+
+        with wave.open(input_wav_path, 'rb') as wf:
+            frames = wf.readframes(wf.getnframes())
+
+        all_bits = []
+        for byte in frames:
+            for b in range(8):
+                all_bits.append((byte >> b) & 1)
+
+        data_bytes = self._extract_header_and_data(all_bits)
+
+        with open(output_path, 'wb') as f:
+            f.write(data_bytes)
+
+        return {'success': True, 'output_path': output_path, 'size': len(data_bytes)}
+
+    def encode_flac(self, input_flac_path, data, output_path):
+        if not HAS_WAVE:
+            raise ImportError("Модуль wave не доступен")
+        if not HAS_FFMPEG:
+            raise ImportError("Установите ffmpeg для конвертации FLAC")
+
+        import wave
+        import subprocess
+        import tempfile
+
+        tmp_wav = tempfile.NamedTemporaryFile(suffix='.wav', delete=False).name
+        try:
+            subprocess.run(['ffmpeg', '-i', input_flac_path, tmp_wav, '-y'],
+                           capture_output=True, check=True)
+            result = self.encode_wav(tmp_wav, data, tmp_wav)
+            if not result['success']:
+                return result
+            subprocess.run(['ffmpeg', '-i', tmp_wav, '-compression_level', '8',
+                           output_path, '-y'], capture_output=True, check=True)
+            return {'success': True, 'output_path': output_path, 'size': result.get('size', 0)}
+        except subprocess.CalledProcessError as e:
+            return {'success': False, 'error': f"FFmpeg ошибка: {e.stderr.decode() if e.stderr else str(e)}"}
+        finally:
+            os.unlink(tmp_wav)
+
+    def decode_flac(self, input_flac_path, output_path):
+        if not HAS_WAVE:
+            raise ImportError("Модуль wave не доступен")
+        if not HAS_FFMPEG:
+            raise ImportError("Установите ffmpeg для конвертации FLAC")
+
+        import wave
+        import subprocess
+        import tempfile
+
+        tmp_wav = tempfile.NamedTemporaryFile(suffix='.wav', delete=False).name
+        try:
+            subprocess.run(['ffmpeg', '-i', input_flac_path, tmp_wav, '-y'],
+                           capture_output=True, check=True)
+            return self.decode_wav(tmp_wav, output_path)
+        except subprocess.CalledProcessError as e:
+            return {'success': False, 'error': f"FFmpeg ошибка: {e.stderr.decode() if e.stderr else str(e)}"}
+        finally:
+            os.unlink(tmp_wav)
 
     def encode_video(self, input_video_path, data, output_path,
                      codec='libx264', bitrate='2M', fps=None):

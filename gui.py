@@ -115,6 +115,7 @@ class ColorCryptApp:
         self.k_lsb_b_var = tk.StringVar(value="3")
         self.k_lsb_a_var = tk.StringVar(value="1")
         self.zip_mode_var = tk.BooleanVar(value=False)
+        self.ecc_var = tk.BooleanVar(value=False)
 
         self.encryption_var = tk.BooleanVar(value=False)
         self.password_var = tk.StringVar(value="")
@@ -436,7 +437,8 @@ class ColorCryptApp:
             lsb_bits=int(self.lsb_bits_var.get()),
             k_lsb=k_lsb,
             zip_mode=self.zip_mode_var.get(),
-            salt=salt
+            salt=salt,
+            ecc_enabled=self.ecc_var.get()
         )
 
     def save_settings(self):
@@ -460,6 +462,7 @@ class ColorCryptApp:
             'k_lsb_b': int(self.k_lsb_b_var.get()),
             'k_lsb_a': int(self.k_lsb_a_var.get()),
             'zip_mode': self.zip_mode_var.get(),
+            'ecc': self.ecc_var.get(),
             'salt': self.salt_var.get(),
             'lang': self.lang_var.get(),
             'dark_mode': self.dark_mode_var.get(),
@@ -495,6 +498,7 @@ class ColorCryptApp:
                 self.k_lsb_b_var.set(str(settings.get('k_lsb_b', 3)))
                 self.k_lsb_a_var.set(str(settings.get('k_lsb_a', 1)))
                 self.zip_mode_var.set(settings.get('zip_mode', False))
+                self.ecc_var.set(settings.get('ecc', False))
                 self.salt_var.set(settings.get('salt', ''))
                 self.lang_var.set(settings.get('lang', 'ru'))
                 self.dark_mode_var.set(settings.get('dark_mode', False))
@@ -629,12 +633,61 @@ class ColorCryptApp:
         if hasattr(self, 'text_area'):
             self.text_area.drop_target_register(DND_FILES)
             self.text_area.dnd_bind('<<Drop>>', self.on_file_drop)
+        if hasattr(self, 'file_label'):
+            self.file_label.drop_target_register(DND_FILES)
+            self.file_label.dnd_bind('<<Drop>>', self.on_file_drop)
+        if hasattr(self, 'scan_file_label'):
+            self.scan_file_label.drop_target_register(DND_FILES)
+            self.scan_file_label.dnd_bind('<<Drop>>', self._on_scan_drop)
+        if hasattr(self, 'iii_container_label'):
+            self.iii_container_label.drop_target_register(DND_FILES)
+            self.iii_container_label.dnd_bind('<<Drop>>', self._on_iii_container_drop)
+        if hasattr(self, 'iii_secret_label'):
+            self.iii_secret_label.drop_target_register(DND_FILES)
+            self.iii_secret_label.dnd_bind('<<Drop>>', self._on_iii_secret_drop)
+        if hasattr(self, 'media_input_label'):
+            self.media_input_label.drop_target_register(DND_FILES)
+            self.media_input_label.dnd_bind('<<Drop>>', self._on_media_input_drop)
+        if hasattr(self, 'media_data_label'):
+            self.media_data_label.drop_target_register(DND_FILES)
+            self.media_data_label.dnd_bind('<<Drop>>', self._on_media_data_drop)
 
     def on_file_drop(self, event):
         files = event.data.strip('{}')
         if files:
             file_list = files.split()
             self.load_file(file_list[0])
+
+    def _on_scan_drop(self, event):
+        files = event.data.strip('{}')
+        if files:
+            self.scan_file_path = files.split()[0]
+            self.scan_file_label.config(text=os.path.basename(self.scan_file_path))
+            self.scan_status_label.config(text=self._tr("status_ready"))
+
+    def _on_iii_container_drop(self, event):
+        files = event.data.strip('{}')
+        if files:
+            self.iii_container_path = files.split()[0]
+            self.iii_container_label.config(text=os.path.basename(self.iii_container_path))
+
+    def _on_iii_secret_drop(self, event):
+        files = event.data.strip('{}')
+        if files:
+            self.iii_secret_path = files.split()[0]
+            self.iii_secret_label.config(text=os.path.basename(self.iii_secret_path))
+
+    def _on_media_input_drop(self, event):
+        files = event.data.strip('{}')
+        if files:
+            self.media_input_path = files.split()[0]
+            self.media_input_label.config(text=os.path.basename(self.media_input_path))
+
+    def _on_media_data_drop(self, event):
+        files = event.data.strip('{}')
+        if files:
+            self.media_data_file = files.split()[0]
+            self.media_data_label.config(text=os.path.basename(self.media_data_file))
 
     def create_widgets(self):
         self.root.title(self._tr("app_title", CURRENT_VERSION))
@@ -787,6 +840,10 @@ class ColorCryptApp:
         self.integrity_chk = ttk.Checkbutton(self.opt_frame, text=self._tr("integrity"),
                                              variable=self.integrity_var, command=self._update_core_settings)
         self.integrity_chk.pack(anchor=tk.W, pady=2)
+
+        self.ecc_chk = ttk.Checkbutton(self.opt_frame, text=self._tr("ecc_label"),
+                                       variable=self.ecc_var, command=self._update_core_settings)
+        self.ecc_chk.pack(anchor=tk.W, pady=2)
 
         self.preserve_chk = ttk.Checkbutton(self.opt_frame, text=self._tr("preserve_name"),
                                             variable=self.preserve_filename_var, command=self._update_core_settings)
@@ -1541,6 +1598,10 @@ class ColorCryptApp:
             ext = [("MP4 files", "*.mp4")]
         elif codec == 'MP3':
             ext = [("MP3 files", "*.mp3")]
+        elif codec == 'WAV':
+            ext = [("WAV files", "*.wav")]
+        elif codec == 'FLAC':
+            ext = [("FLAC files", "*.flac")]
         elif 'Video' in codec:
             ext = [("Video files", "*.mp4 *.avi *.mov *.mkv *.webm")]
         path = filedialog.askopenfilename(title=self._tr("select_media"), filetypes=ext)
@@ -1557,7 +1618,8 @@ class ColorCryptApp:
 
     def _media_select_output(self):
         codec = self.media_codec_var.get()
-        ext = codec.lower() if codec else 'bin'
+        ext_map = {'GIF': 'gif', 'MP4': 'mp4', 'MP3': 'mp3', 'WAV': 'wav', 'FLAC': 'flac', 'Video (FFmpeg)': 'mp4'}
+        ext = ext_map.get(codec, 'bin')
         path = filedialog.asksaveasfilename(title=self._tr("select_save_as"),
                                             defaultextension=f".{ext}",
                                             filetypes=[(f"{codec} files", f"*.{ext}")])
@@ -1578,7 +1640,8 @@ class ColorCryptApp:
             return
 
         if not self.media_output_path:
-            ext = codec.lower() if mode == "encode" else "bin"
+            ext_map = {'GIF': 'gif', 'MP4': 'mp4', 'MP3': 'mp3', 'WAV': 'wav', 'FLAC': 'flac', 'Video (FFmpeg)': 'mp4'}
+            ext = ext_map.get(codec, 'bin') if mode == "encode" else "bin"
             out = filedialog.asksaveasfilename(title=self._tr("select_save_as"),
                                                defaultextension=f".{ext}",
                                                filetypes=[("All files", "*.*")])
@@ -1602,6 +1665,10 @@ class ColorCryptApp:
                         result = media.encode_mp4(self.media_input_path, data, self.media_output_path)
                     elif codec == 'MP3':
                         result = media.encode_mp3(self.media_input_path, data, self.media_output_path)
+                    elif codec == 'WAV':
+                        result = media.encode_wav(self.media_input_path, data, self.media_output_path)
+                    elif codec == 'FLAC':
+                        result = media.encode_flac(self.media_input_path, data, self.media_output_path)
                     elif 'Video' in codec:
                         result = media.encode_video(self.media_input_path, data, self.media_output_path)
                     else:
@@ -1613,6 +1680,10 @@ class ColorCryptApp:
                         result = media.decode_mp4(self.media_input_path, self.media_output_path)
                     elif codec == 'MP3':
                         result = media.decode_mp3(self.media_input_path, self.media_output_path)
+                    elif codec == 'WAV':
+                        result = media.decode_wav(self.media_input_path, self.media_output_path)
+                    elif codec == 'FLAC':
+                        result = media.decode_flac(self.media_input_path, self.media_output_path)
                     elif 'Video' in codec:
                         result = media.decode_video(self.media_input_path, self.media_output_path)
                     else:

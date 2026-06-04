@@ -2,10 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
-## [2.2.0] — 2026-06-04
+## [2.3.0] — 2026-06-04
 
 ### Added
-- **LSB entropy analysis** for steganalysis detection: `_analyze_lsb_entropy()` static method computes per‑channel χ² p‑values; flags images where LSB distribution is too uniform (potential steganography)
+- **WAV/FLAC audio steganography**: `encode_wav()`/`decode_wav()` using the built-in `wave` module; `encode_flac()`/`decode_flac()` via FFmpeg conversion; new codecs in the Media tab and CLI
+- **ECC (Error Correction Codes)**: XOR-parity block ECC for resilience against JPEG compression artifacts and channel noise; new `--ecc` CLI flag and `ECC:1` header flag; configurable via GUI checkbox in Settings
+- **Auto-detection of stego parameters**: `auto_detect_params()` scans raw, LSB, and K-LSB layers when the header cannot be read directly; enables decode of LSB/K-LSB images without manually specifying bit depths
+- **Noise-based adaptive K-LSB**: `_adaptive_k_lsb()` now analyzes per-channel pixel variance to assign bit depths (noisier channels get more bits); activated when adaptive mode is checked
+- **Enhanced drag-and-drop**: drag-drop support for scan, Image-in-Image, and Media tabs' file labels
+
+### Changed
+- `OUTPUT_FORMATS` and format handling unchanged; output format list in CLI help now shows all options
+- Version bumped to 2.3.0
+- Media tab description updated to include WAV/FLAC
+
+### Fixed
+- Decode ordering for ECC: ECC decode is now applied before decryption/decompression (outermost layer first)
+- Legacy decode and auto-detect paths now correctly parse all header fields (compression, encryption, ECC)
+
+## [2.2.0] — 2026-06-04: `_analyze_lsb_entropy()` static method computes per‑channel χ² p‑values; flags images where LSB distribution is too uniform (potential steganography)
 - **Separate salt/password input**: `set_settings()` now accepts a `salt` parameter (bytes); `encrypt_data_siv()` passes existing salt through to `generate_key_from_password()`, enabling deterministic key derivation when a user‑supplied salt is provided
 - **CLI `--salt` argument**: specify salt as a hex string (requires `--password`); salt is stored in encryption metadata as `SALT:...`
 - **GUI salt entry**: new "Соль (hex, optional)" field in the Security tab; persisted in config

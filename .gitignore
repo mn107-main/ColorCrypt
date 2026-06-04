@@ -13,6 +13,7 @@ venv/
 .venv/
 
 # Project output
+check.txt
 dat/
 colorcrypt_config.json
 
