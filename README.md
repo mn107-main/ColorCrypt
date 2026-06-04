@@ -3,18 +3,20 @@
 [![Python Version](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-**ColorCrypt** — это инструмент для сокрытия любых файлов внутри изображений (PNG, WebP, BMP, TIFF) с возможностью восстановления оригинала. Проект сочетает современные методы криптографии (AES-256-GCM), сжатия (zlib) и LSB-стеганографии, поддерживает работу с большими файлами через автоматическую сегментацию, а также предоставляет расширенные возможности: встраивание изображения в изображение (Image-in-Image) и медиа‑стеганографию (MP4, GIF, MP3). Наличие CLI и Tkinter GUI делает инструмент доступным как для автоматизации, так и для повседневного использования.
+**ColorCrypt** — это инструмент для сокрытия любых файлов внутри изображений (PNG, WebP, BMP, TIFF, JPEG) с возможностью восстановления оригинала. Проект сочетает современные методы криптографии (AES-256-SIV + Argon2id), сжатия (zlib) и LSB-стеганографии (включая адаптивный K-LSB с разной глубиной на канал), поддерживает работу с большими файлами через автоматическую сегментацию (в т.ч. упаковку в ZIP), а также предоставляет расширенные возможности: встраивание изображения в изображение (Image-in-Image) и медиа-стеганографию (MP4, GIF, MP3, Video через FFmpeg). Наличие CLI и Tkinter GUI делает инструмент доступным как для автоматизации, так и для повседневного использования.
 
 ## Возможности
 
 *   **Кодирование файлов в изображения** — встраивание данных в пиксельные каналы (монохромный, RGB, RGBA).
-*   **LSB-стеганография** — настраиваемое LSB-встраивание (1–4 бита) для минимизации визуальных искажений.
+*   **LSB-стеганография** — настраиваемое LSB-встраивание (1–4 бита) для минимизации визуальных искажений, **а также K-LSB** (разная глубина на канал: R, G, B, A) с адаптивным авто-режимом.
+*   **LSB-энтропия (стеганоанализ)** — χ²-тест на равномерность распределения LSB-битов для выявления подозрительных изображений (потенциальная стеганография).
 *   **Восстановление файлов из изображений** — с проверкой целостности через SHA-256.
-*   **Шифрование** — AES-256-GCM с PBKDF2 (100 000 итераций).
+*   **Шифрование** — AES-256-SIV (стойкость к повтору nonce) с Argon2id (GPU-устойчивый KDF, 64 MB памяти).
 *   **Сжатие** — zlib с настраиваемыми уровнями (none/min/normal/max).
-*   **Поддержка больших файлов** — автоматическая сегментация (10/50/100/250 МБ на изображение).
+*   **Поддержка больших файлов** — автоматическая сегментация (10/50/100/250 МБ на изображение) с возможностью упаковки в ZIP.
+*   **Форматы вывода** — PNG, WebP, BMP, TIFF (lossless), JPEG (lossy), ZIP (упаковка результатов).
 *   **Изображение в изображении (III)** — сокрытие одного изображения внутри другого с использованием альфа-канала (или RGB LSB) и сохранением оригинального альфа-канала.
-*   **Медиа-стеганография** — встраивание данных в файлы GIF, MP4 или MP3 (опционально: imageio, ffmpeg, pydub).
+*   **Медиа-стеганография** — встраивание данных в файлы GIF, MP4, MP3 или видео через FFmpeg (опционально: imageio, ffmpeg, pydub).
 *   **Автоматическое сканирование заголовков** — обнаружение скрытых данных перебором LSB-слоёв, каналов и сырых байтов.
 *   **Производительность** — векторизованные операции с пикселями (numpy), ленивое декодирование, кэширование данных.
 *   **CLI + GUI** — интерфейс командной строки и графический интерфейс на Tkinter.
@@ -25,13 +27,14 @@
 *   `pycryptodome`
 *   `pillow`
 *   `numpy`
+*   `argon2-cffi`
 
 ### Опциональные зависимости
 
 | Библиотека | Функциональность |
 |---|---|
 | `imageio` + `imageio-ffmpeg` | Стеганография для GIF / MP4 |
-| `ffmpeg` (системный бинарный файл) | Обработка MP4 / MP3 |
+| `ffmpeg` (системный бинарный файл) | Обработка MP4 / MP3 / Video стеганография |
 | `pydub` | Стеганография для MP3 |
 | `tkinterdnd2` | Drag-and-drop в GUI |
 
@@ -39,7 +42,7 @@
 
 ```bash
 # Основные зависимости
-pip install pycryptodome pillow numpy
+pip install -r requirements.txt
 
 # Опциональные зависимости
 pip install imageio imageio-ffmpeg pydub
@@ -53,7 +56,7 @@ pip install imageio imageio-ffmpeg pydub
 # Кодирование файла в PNG
 python core.py encode secret.txt -o output.png
 
-# Кодирование с паролем (AES-GCM шифрование)
+# Кодирование с паролем (AES-256-SIV + Argon2id шифрование)
 python core.py encode secret.txt -o encrypted.png -p "mypassword"
 
 # Кодирование со сжатием и RGB-режимом
@@ -108,7 +111,7 @@ python core.py scan image.png --scan-alpha --scan-rgb --scan-layers 2
 | `-m, --mode` | Цветовой режим: `mono`, `rgb`, `rgba` (по умолчанию: `rgb`) |
 | `--encode-mode` | Всегда `base64` |
 | `--no-integrity` | Отключить проверку целостности SHA-256 |
-| `--format` | Формат изображения: `PNG`, `WebP`, `BMP`, `TIFF` (по умолчанию: `PNG`) |
+| `--format` | Формат изображения: `PNG`, `WebP`, `BMP`, `TIFF`, `JPEG`, `ZIP` (по умолчанию: `PNG`) |
 | `--lsb-bits` | Глубина LSB: `0` (прямой), `1..4` (LSB). По умолчанию: `0` |
 | `--chunk` | Включить режим сегментации для больших файлов |
 | `--chunk-size` | Размер сегмента: `10MB`, `50MB`, `100MB`, `250MB` (по умолчанию: `50MB`) |
@@ -130,44 +133,46 @@ python core.py
 GUI предоставляет вкладки для:
 
 *   **Главная** — Кодирование/декодирование файлов, прогресс-бар, предпросмотр
-*   **Настройки** — Режим каналов, глубина LSB, сжатие, формат вывода, сегментация
-*   **Безопасность** — AES-256-GCM шифрование, индикатор сложности пароля
+*   **Настройки** — Режим каналов, глубина LSB / K-LSB, сжатие, формат вывода, сегментация, ZIP-упаковка
+*   **Безопасность** — AES-256-SIV шифрование (стойкость к повтору nonce) + Argon2id, индикатор сложности пароля
 *   **Пакетная обработка** — Пакетное кодирование/декодирование нескольких файлов
 *   **Картинка в картинке** — III-стеганография (сокрытие/извлечение с сохранением альфа-канала)
-*   **Медиа (MP4/GIF/MP3)** — Медиа-стеганография для видео и аудио
-*   **Детектор** — Сканирование изображений на наличие скрытых заголовков ColorCrypt (все LSB-слои и каналы)
+*   **Медиа (GIF/MP4/MP3/Video)** — Медиа-стеганография для видео и аудио
+*   **Детектор** — Сканирование изображений на наличие скрытых заголовков ColorCrypt (все LSB-слои и каналы), а также χ²-анализ LSB-энтропии для выявления стеганографии
 *   **Отладка** — Просмотр логов отладки
 
 ## Как это работает
 
-1.  **Кодирование файла:** Данные проходят Base64-кодирование, опционально сжимаются и шифруются, после чего упаковываются в пиксели изображения. В **прямом режиме** байты записываются напрямую в каналы пикселей; в **LSB-режиме** (`--lsb-bits 1..4`) данные распределяются по младшим битам для снижения визуального шума. Заголовок хранит метаданные: версию, исходное имя файла, размер, SHA-256, флаги сжатия/шифрования и глубину LSB.
+1.  **Кодирование файла:** Данные проходят Base64-кодирование, опционально сжимаются и шифруются, после чего упаковываются в пиксели изображения. В **прямом режиме** байты записываются напрямую в каналы пикселей; в **LSB-режиме** (`--lsb-bits 1..4`) данные распределяются по младшим битам для снижения визуального шума. В **K-LSB-режиме** каждый канал использует свою глубину (например, R=1, G=2, B=3), записанную в заголовке как `KLSB:R1G2B3`. Заголовок хранит метаданные: версию, исходное имя файла, размер, SHA-256, флаги сжатия/шифрования и глубину LSB.
 2.  **Декодирование:** Заголовок считывается из первых пикселей (всегда в прямом режиме для обратной совместимости). Если обнаружена метка `LSB:N`, полезная нагрузка извлекается с использованием N-битного LSB; в противном случае используется прямой режим.
 3.  **Изображение в изображении (III):** Секретное изображение сжимается, и его LSB-биты встраиваются в альфа-канал (или RGB) контейнерного изображения. Магическая сигнатура (`0xCC0DE5`) обеспечивает автоматическое обнаружение. Оригинальные LSB альфа-канала сохраняются и могут быть восстановлены (`--restore-container`).
-4.  **Медиа-стеганография:** Биты данных встраиваются в пиксели кадров GIF, YUV-плоскости (U/V) MP4 или аудиосэмплы MP3.
+4.  **Медиа-стеганография:** Биты данных встраиваются в пиксели кадров GIF, YUV-плоскости (U/V) видео, аудиосэмплы MP3 или покадрово через FFmpeg.
 5.  **Сканирование:** Программа ищет в сырых байтах заголовки `V1|...` (прямой режим), а также во всех LSB-слоях (1–8 бит) и комбинациях каналов — магическую сигнатуру `0xCC0DE5` (режим III).
 
 ## Структура проекта
 
 *   `core.py` — движок кодирования/декодирования + CLI (производительность, Image-in-Image, сканирование)
 *   `gui.py` — графический интерфейс Tkinter (все функции)
-*   `stego_media.py` — опциональная медиа-стеганография (GIF, MP4, MP3)
+*   `stego_media.py` — опциональная медиа-стеганография (GIF, MP4, MP3, Video FFmpeg)
 
 ---
 
 # ColorCrypt (English)
 
-**ColorCrypt** is a tool for encoding any file into an image (PNG, WebP, BMP, TIFF) and decoding it back. It combines modern cryptography (AES-256-GCM), compression (zlib), and LSB steganography, supports large files via automatic chunking, and offers extended features like Image‑in‑Image steganography and media steganography (MP4, GIF, MP3). Both CLI and Tkinter GUI are available.
+**ColorCrypt** is a tool for encoding any file into an image (PNG, WebP, BMP, TIFF, JPEG) and decoding it back. It combines modern cryptography (AES-256-SIV + Argon2id), compression (zlib), and LSB steganography (including adaptive K-LSB with per-channel bit depth), supports large files via automatic chunking (with optional ZIP packing), and offers extended features like Image‑in‑Image steganography and media steganography (MP4, GIF, MP3, Video via FFmpeg). Both CLI and Tkinter GUI are available.
 
 ## Features
 
 - **Encode files to images** — embeds file data into pixel channels (mono, RGB, RGBA)
-- **LSB steganography** — configurable 1–4 bit LSB embedding for low‑noise data hiding
+- **LSB steganography** — configurable 1–4 bit LSB embedding for low‑noise data hiding, plus **K-LSB** (per-channel depth: R, G, B, A) with adaptive auto‑mode
+- **LSB entropy (steganalysis)** — χ² test on LSB bit distribution to flag images with suspiciously uniform LSBs (potential steganography)
 - **Decode images back to original files** — with SHA‑256 integrity check
-- **Encryption** — AES‑256‑GCM with PBKDF2 key derivation (100k iterations)
+- **Encryption** — AES‑256‑SIV (nonce misuse resistant) with Argon2id (GPU‑resistant KDF, 64 MB memory)
 - **Compression** — zlib with configurable levels (none/min/normal/max)
-- **Large file support** — automatic chunking (10/50/100/250 MB per image)
+- **Large file support** — automatic chunking (10/50/100/250 MB per image) with optional ZIP packing
+- **Output formats** — PNG, WebP, BMP, TIFF (lossless), JPEG (lossy), ZIP (archive bundling)
 - **Image‑in‑Image** — hide one image inside another using alpha channel (or RGB LSB), with original alpha preservation
-- **Media steganography** — embed data into GIF, MP4, or MP3 files (optional: imageio, ffmpeg, pydub)
+- **Media steganography** — embed data into GIF, MP4, MP3, or Video via FFmpeg (optional: imageio, ffmpeg, pydub)
 - **Header scanning** — auto‑detect hidden data by scanning LSB layers, channels, and raw bytes
 - **Performance** — numpy‑vectorized pixel operations, lazy decoding, data caching
 - **CLI + GUI** — command‑line interface and Tkinter GUI
@@ -178,13 +183,14 @@ GUI предоставляет вкладки для:
 - `pycryptodome`
 - `pillow`
 - `numpy`
+- `argon2-cffi`
 
 ### Optional dependencies
 
 | Library | Feature |
 |---|---|
 | `imageio` + `imageio-ffmpeg` | GIF / MP4 steganography |
-| `ffmpeg` (system binary) | MP4 / MP3 processing |
+| `ffmpeg` (system binary) | MP4 / MP3 / Video steganography |
 | `pydub` | MP3 steganography |
 | `tkinterdnd2` | Drag‑and‑drop in GUI |
 
@@ -192,7 +198,7 @@ GUI предоставляет вкладки для:
 
 ```bash
 # Core dependencies
-pip install pycryptodome pillow numpy
+pip install -r requirements.txt
 
 # Optional dependencies
 pip install imageio imageio-ffmpeg pydub
@@ -206,7 +212,7 @@ pip install imageio imageio-ffmpeg pydub
 # Encode a file to PNG
 python core.py encode secret.txt -o output.png
 
-# Encode with password (AES-GCM encryption)
+# Encode with password (AES-256-SIV + Argon2id encryption)
 python core.py encode secret.txt -o encrypted.png -p "mypassword"
 
 # Encode with compression and RGB mode
@@ -238,6 +244,20 @@ python core.py iii-encode container.png secret.png -o output.png
 python core.py iii-decode container.png -o extracted.png --restore-container
 ```
 
+### Encryption with custom salt
+
+```bash
+# Encode with explicit salt (hex string) for deterministic key derivation
+python core.py encode secret.txt -o encrypted.png -p "mypassword" --salt a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6
+
+# Decode (salt is automatically read from image metadata)
+python core.py decode encrypted.png -o restored.txt -p "mypassword"
+```
+
+### LSB Entropy Analysis (Steganalysis)
+
+LSB entropy analysis is available through the GUI (Scanner tab → "Анализ LSB‑энтропии" button in RU / "LSB Entropy Analysis" button in EN) and programmatically via `core.analyze_lsb_entropy()`. It uses a χ² test on per‑channel LSB distribution to flag images with suspiciously uniform LSBs — a common indicator of steganographic embedding.
+
 ### Scanning
 
 ```bash
@@ -257,11 +277,12 @@ python core.py scan image.png --scan-alpha --scan-rgb --scan-layers 2
 | `input2` | Second input (secret image for `iii-encode`) |
 | `-o, --output` | Output file or directory |
 | `-p, --password` | Encryption password |
+| `--salt` | Salt in hex (requires `--password`; random if omitted) |
 | `-c, --compress` | Compression level: `none`, `min`, `normal`, `max` (default: `normal`) |
 | `-m, --mode` | Color mode: `mono`, `rgb`, `rgba` (default: `rgb`) |
 | `--encode-mode` | Always `base64` |
 | `--no-integrity` | Disable SHA-256 integrity check |
-| `--format` | Image format: `PNG`, `WebP`, `BMP`, `TIFF` (default: `PNG`) |
+| `--format` | Image format: `PNG`, `WebP`, `BMP`, `TIFF`, `JPEG`, `ZIP` (default: `PNG`) |
 | `--lsb-bits` | LSB bit depth: `0` (direct), `1..4` (LSB). Default: `0` |
 | `--chunk` | Enable chunk mode for large files |
 | `--chunk-size` | Chunk size: `10MB`, `50MB`, `100MB`, `250MB` (default: `50MB`) |
@@ -283,24 +304,24 @@ python core.py
 The GUI provides tabs for:
 
 - **Home** — Encode/Decode files, progress bar, preview
-- **Settings** — Channel mode, LSB bit depth, compression, output format, chunking
-- **Security** — AES‑256‑GCM encryption, password strength meter
+- **Settings** — Channel mode, LSB / K-LSB bit depth, compression, output format, chunking, ZIP packing
+- **Security** — AES‑256‑SIV (nonce misuse resistant) + Argon2id, password strength meter
 - **Batch** — Batch encode/decode multiple files
 - **Image‑in‑Image** — III steganography (hide/reveal with alpha preservation)
-- **Media (MP4/GIF/MP3)** — Media steganography for video and audio
-- **Detector** — Scan images for hidden ColorCrypt headers (all LSB layers & channels)
+- **Media (GIF/MP4/MP3/Video)** — Media steganography for video and audio
+- **Detector** — Scan images for hidden ColorCrypt headers (all LSB layers & channels), plus χ² LSB entropy analysis to detect steganography
 - **Debug** — Debug log viewer
 
 ## How it works
 
-1. **File encoding:** Data is Base64‑encoded, optionally compressed and encrypted, then packed into image pixels. **Direct mode** stores bytes directly in pixel channels; **LSB mode** (`--lsb-bits 1..4`) spreads data across least significant bits for lower visual noise. A header stores metadata: version, original filename, size, SHA‑256, compression/encryption flags, and LSB bit depth.
+1. **File encoding:** Data is Base64‑encoded, optionally compressed and encrypted, then packed into image pixels. **Direct mode** stores bytes directly in pixel channels; **LSB mode** (`--lsb-bits 1..4`) spreads data across least significant bits for lower visual noise. **K-LSB mode** uses per-channel bit depths (e.g., R=1, G=2, B=3) stored as `KLSB:R1G2B3` in the header. A header stores metadata: version, original filename, size, SHA‑256, compression/encryption flags, and LSB bit depth.
 2. **Decoding:** The header is read from the first pixels (always in direct mode for backward compatibility). If `LSB:N` is found, the payload is extracted using N‑bit LSB; otherwise direct mode is used.
 3. **Image‑in‑Image:** A secret image is compressed and its LSB bits are embedded into the alpha channel (or RGB) of a container image. A magic signature (`0xCC0DE5`) enables auto‑detection. The original alpha channel LSBs are saved and can be restored (`--restore-container`).
-4. **Media steganography:** Data bits are embedded into GIF frame pixels, MP4 YUV (U/V) planes, or MP3 audio samples.
+4. **Media steganography:** Data bits are embedded into GIF frame pixels, video YUV (U/V) planes via FFmpeg, or MP3 audio samples.
 5. **Scanning:** The program searches raw bytes for `V1|...` headers (direct mode) and all LSB layers (1–8 bits) across all channel combinations for the `0xCC0DE5` magic signature (III mode).
 
 ## Project structure
 
 - `core.py` — encoding/decoding engine + CLI (performance, Image‑in‑Image, scanning)
 - `gui.py` — Tkinter graphical interface (all features)
-- `stego_media.py` — optional media steganography (GIF, MP4, MP3)
+- `stego_media.py` — optional media steganography (GIF, MP4, MP3, Video FFmpeg)

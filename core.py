@@ -6,21 +6,26 @@ import zlib
 import json
 import sys
 import argparse
+import zipfile
+import io
 from pathlib import Path
 from array import array
 from threading import Event
 from functools import lru_cache
 import numpy as np
 from Crypto.Cipher import AES
-from Crypto.Protocol.KDF import PBKDF2
 from Crypto.Random import get_random_bytes
+from argon2.low_level import hash_secret_raw, Type
 from PIL import Image
 
 CURRENT_VERSION = "1"
 
 # ─── Constants ─────────────────────────────────────────────────────
 MAX_IMAGE_WIDTH = 4096
-PBKDF2_ITERATIONS = 100000
+ARGON2_TIME_COST = 3
+ARGON2_MEMORY_COST = 65536
+ARGON2_PARALLELISM = 4
+ARGON2_SALT_SIZE = 16
 MAX_HEADER_LENGTH = 65536
 HEADER_SIZE_BYTES = 4
 
@@ -32,8 +37,12 @@ OUTPUT_FORMATS = {
     "PNG": "png",
     "WebP": "webp",
     "BMP": "bmp",
-    "TIFF": "tiff"
+    "TIFF": "tiff",
+    "JPEG": "jpg",
+    "ZIP": "zip"
 }
+
+LOSSLESS_FORMATS = {"PNG", "WebP", "BMP", "TIFF"}
 
 COMPRESS_LEVELS = {
     "none": 0,
@@ -76,6 +85,9 @@ class ColorCryptCore:
         self.chunk_size = "50MB"
         self.preserve_filename = True
         self.lsb_bits = 0
+        self.k_lsb = None
+        self.adaptive_lsb = False
+        self.zip_mode = False
 
     def _log_debug(self, message):
         if self.debug_callback:
@@ -90,7 +102,8 @@ class ColorCryptCore:
                      encryption_enabled=False, password=None, key=None,
                      output_format="PNG", make_square=False, output_dir=None,
                      encode_mode="base64", chunk_mode=False, chunk_size="50MB",
-                     preserve_filename=True, lsb_bits=0):
+                     preserve_filename=True, lsb_bits=0, k_lsb=None,
+                     adaptive_lsb=False, zip_mode=False, salt=None):
         self.compress_enabled = compress_enabled
         self.compress_level = compress_level
         self.channel_mode = channel_mode
@@ -98,6 +111,7 @@ class ColorCryptCore:
         self.encryption_enabled = encryption_enabled
         self.password = password
         self.key = key
+        self.salt = salt
         self.output_format = output_format
         self.make_square = make_square
         self.output_dir = output_dir
@@ -106,68 +120,105 @@ class ColorCryptCore:
         self.chunk_size = chunk_size
         self.preserve_filename = preserve_filename
         self.lsb_bits = lsb_bits
+        if isinstance(k_lsb, (tuple, list)):
+            channel_names = self._channel_names(self.channel_mode)
+            self.k_lsb = dict(zip(channel_names, k_lsb[:len(channel_names)]))
+        else:
+            self.k_lsb = k_lsb
+        self.adaptive_lsb = adaptive_lsb
+        self.zip_mode = zip_mode
 
     def generate_key_from_password(self, password, salt=None):
         if salt is None:
-            salt = get_random_bytes(32)
+            salt = get_random_bytes(ARGON2_SALT_SIZE)
         self.salt = salt
-        key = PBKDF2(password, salt, dkLen=32, count=PBKDF2_ITERATIONS)
+        key = hash_secret_raw(
+            secret=password.encode('utf-8'),
+            salt=salt,
+            time_cost=ARGON2_TIME_COST,
+            memory_cost=ARGON2_MEMORY_COST,
+            parallelism=ARGON2_PARALLELISM,
+            hash_len=32,
+            type=Type.ID
+        )
         return key, salt
 
-    def encrypt_data_gcm(self, data):
+    def encrypt_data_siv(self, data):
         if not self.encryption_enabled:
             return data, None, None
 
         if self.key is None and self.password:
-            self.key, self.salt = self.generate_key_from_password(self.password)
+            self.key, self.salt = self.generate_key_from_password(self.password, salt=self.salt)
         elif self.key is None:
             raise ValueError("Ключ или пароль не установлены")
 
         if self.salt is None:
-            self.salt = get_random_bytes(32)
+            self.salt = get_random_bytes(ARGON2_SALT_SIZE)
 
-        iv = get_random_bytes(12)
-        cipher = AES.new(self.key, AES.MODE_GCM, nonce=iv)
+        nonce = get_random_bytes(12)
+        cipher = AES.new(self.key, AES.MODE_SIV, nonce=nonce)
         encrypted_data, tag = cipher.encrypt_and_digest(data)
 
         metadata = {
-            'iv': base64.b64encode(iv).decode('ascii'),
+            'nonce': base64.b64encode(nonce).decode('ascii'),
             'tag': base64.b64encode(tag).decode('ascii'),
             'salt': base64.b64encode(self.salt).decode('ascii'),
-            'mode': 'GCM'
+            'mode': 'SIV',
+            'kdf': 'Argon2id'
         }
         metadata_json = json.dumps(metadata).encode('utf-8')
         metadata_b64 = base64.b64encode(metadata_json).decode('ascii')
 
         return encrypted_data, metadata_b64, self.salt
 
-    def decrypt_data_gcm(self, encrypted_data, metadata_b64, password=None, key=None):
+    def decrypt_data(self, encrypted_data, metadata_b64, password=None, key=None):
         try:
             metadata_json = base64.b64decode(metadata_b64)
             metadata = json.loads(metadata_json.decode('utf-8'))
-            iv = base64.b64decode(metadata['iv'])
-            tag = base64.b64decode(metadata['tag'])
-            salt = base64.b64decode(metadata['salt'])
+            mode = metadata.get('mode', 'GCM')
 
-            if key:
-                decrypt_key = key
-            elif password:
-                decrypt_key, _ = self.generate_key_from_password(password, salt)
+            if mode == 'GCM':
+                return self._decrypt_legacy_gcm(encrypted_data, metadata, password, key)
+            elif mode == 'SIV':
+                nonce = base64.b64decode(metadata['nonce'])
+                tag = base64.b64decode(metadata['tag'])
+                salt = base64.b64decode(metadata['salt'])
+
+                if key:
+                    decrypt_key = key
+                elif password:
+                    decrypt_key, _ = self.generate_key_from_password(password, salt)
+                else:
+                    return None
+
+                cipher = AES.new(decrypt_key, AES.MODE_SIV, nonce=nonce)
+                decrypted_data = cipher.decrypt_and_verify(encrypted_data, tag)
+                return decrypted_data
             else:
+                self._log_debug(f"Неизвестный режим шифрования: {mode}\n")
                 return None
-
-            cipher = AES.new(decrypt_key, AES.MODE_GCM, nonce=iv)
-            decrypted_data = cipher.decrypt_and_verify(encrypted_data, tag)
-            return decrypted_data
         except Exception as e:
             self._log_debug(f"Ошибка дешифрования: {e}\n")
             return None
 
-    def encrypt_data(self, data):
-        return self.encrypt_data_gcm(data)
+    def _decrypt_legacy_gcm(self, encrypted_data, metadata, password=None, key=None):
+        iv = base64.b64decode(metadata['iv'])
+        tag = base64.b64decode(metadata['tag'])
+        salt = base64.b64decode(metadata['salt'])
 
-    def decrypt_data(self, encrypted_data, metadata_b64, password=None, key=None):
-        return self.decrypt_data_gcm(encrypted_data, metadata_b64, password, key)
+        if key:
+            decrypt_key = key
+        elif password:
+            from Crypto.Protocol.KDF import PBKDF2
+            decrypt_key = PBKDF2(password, salt, dkLen=32, count=100000)
+        else:
+            return None
+
+        cipher = AES.new(decrypt_key, AES.MODE_GCM, nonce=iv)
+        return cipher.decrypt_and_verify(encrypted_data, tag)
+
+    def encrypt_data(self, data):
+        return self.encrypt_data_siv(data)
 
     def get_channels_count(self):
         if self.channel_mode == MODE_MONO:
@@ -186,6 +237,22 @@ class ColorCryptCore:
         elif self.channel_mode == MODE_RGBA:
             return 'A'
         return 'R'
+
+    @staticmethod
+    def _channel_names(mode):
+        if mode == MODE_MONO:
+            return ['L']
+        elif mode == MODE_RGBA:
+            return ['R', 'G', 'B', 'A']
+        return ['R', 'G', 'B']
+
+    @staticmethod
+    def _adaptive_k_lsb(channels_n):
+        if channels_n == ['L']:
+            return {'L': 2}
+        elif channels_n == ['R', 'G', 'B', 'A']:
+            return {'R': 1, 'G': 2, 'B': 3, 'A': 1}
+        return {'R': 1, 'G': 2, 'B': 3}
 
     def _decode_lsb_payload(self, data_bytes, start_offset, lsb):
         remaining = data_bytes[start_offset:]
@@ -213,7 +280,55 @@ class ColorCryptCore:
             return remaining.tobytes()
         return np.packbits(extracted_bits).tobytes()
 
-    def encode_chunked(self, full_data, output_dir, base_name, original_name):
+    def _decode_lsb_payload_k_lsb(self, data_bytes, start_offset, k_lsb, channels_n):
+        flat = data_bytes[start_offset:]
+        total_bits = 0
+        ch_bits = {}
+        for i, ch_name in enumerate(channels_n):
+            depth = k_lsb.get(ch_name, 1)
+            ch_data = flat[i::len(channels_n)]
+            ch_bits[ch_name] = ch_data & ((1 << depth) - 1)
+            total_bits += len(ch_data) * depth
+        result_bits = np.zeros(total_bits, dtype=np.uint8)
+        offset = 0
+        for ch_name in channels_n:
+            depth = k_lsb.get(ch_name, 1)
+            vals = ch_bits[ch_name]
+            count = len(vals)
+            ch_result = np.zeros(count * depth, dtype=np.uint8)
+            for d in range(depth):
+                ch_result[d::depth] = (vals >> d) & 1
+            result_bits[offset:offset + count * depth] = ch_result
+            offset += count * depth
+        return np.packbits(result_bits).tobytes()
+
+    def _encode_lsb_k_lsb(self, flat, payload_bits, header_channels_needed, k_lsb, channels_n):
+        channels = len(channels_n)
+        per_ch_pixels = (len(flat) // channels)
+        offset_pixel = header_channels_needed // channels
+        if header_channels_needed % channels:
+            offset_pixel += 1
+        bit_offset = 0
+        for i, ch_name in enumerate(channels_n):
+            depth = k_lsb.get(ch_name, 1)
+            ch_indices = np.arange(i, len(flat), channels)
+            ch_indices = ch_indices[offset_pixel:]
+            bits_needed = len(ch_indices) * depth
+            ch_bits = payload_bits[bit_offset:bit_offset + bits_needed]
+            if len(ch_bits) == 0:
+                break
+            n = len(ch_bits) // depth * depth
+            ch_bits = ch_bits[:n]
+            packed = np.zeros(len(ch_bits) // depth, dtype=np.uint8)
+            for d in range(depth):
+                packed |= (ch_bits[d::depth].astype(np.uint16) << d)
+            mask = (1 << depth) - 1
+            n_write = min(len(packed), len(ch_indices))
+            flat[ch_indices[:n_write]] = (flat[ch_indices[:n_write]] & np.uint8(~np.uint8(mask))) | packed[:n_write]
+            bit_offset += n
+        return flat
+
+    def encode_chunked(self, full_data, output_dir, base_name, original_name=None):
         chunk_limit = CHUNK_SIZES.get(self.chunk_size, 50 * 1024 * 1024)
         chunks = []
         total = len(full_data)
@@ -221,8 +336,8 @@ class ColorCryptCore:
             if self.cancel_event.is_set():
                 return None
             chunk_data = full_data[i:i+chunk_limit]
-            chunk_file = os.path.join(output_dir, f"{base_name}_chunk_{i//chunk_limit+1:04d}")
-            result = self.encode_single(chunk_data, output_dir, chunk_file, original_name)
+            chunk_tag = f"{base_name}_chunk_{i//chunk_limit+1:04d}"
+            result = self.encode_single(chunk_data, output_dir, chunk_tag, original_name)
             if result['success']:
                 chunks.append(result['output_path'])
             else:
@@ -233,10 +348,20 @@ class ColorCryptCore:
             'chunk_files': chunks,
             'total_chunks': len(chunks)
         }
-        meta_path = os.path.join(output_dir, f"{base_name}_chunks_info.json")
-        with open(meta_path, 'w', encoding='utf-8') as f:
-            json.dump(meta, f, indent=2)
-        return meta_path
+        if self.zip_mode:
+            zip_path = os.path.join(output_dir, f"{base_name}.zip")
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                for ch_path in chunks:
+                    zf.write(ch_path, os.path.basename(ch_path))
+                    os.remove(ch_path)
+                meta['chunk_files'] = [os.path.basename(p) for p in meta['chunk_files']]
+                zf.writestr('chunks_info.json', json.dumps(meta, indent=2))
+            return zip_path
+        else:
+            meta_path = os.path.join(output_dir, f"{base_name}_chunks_info.json")
+            with open(meta_path, 'w', encoding='utf-8') as f:
+                json.dump(meta, f, indent=2)
+            return meta_path
 
     def encode_single(self, data, output_dir, base_name, original_name=None):
         start_time = time.time()
@@ -287,6 +412,9 @@ class ColorCryptCore:
 
             if self.lsb_bits > 0:
                 header_parts.append(f"LSB:{self.lsb_bits}")
+            elif self.k_lsb:
+                klsb_str = 'KLSB:' + ''.join(f'{ch}{d}' for ch, d in self.k_lsb.items())
+                header_parts.append(klsb_str)
 
             header_parts.append(f"LEN:{len(data_bytes)}")
 
@@ -298,15 +426,25 @@ class ColorCryptCore:
             full_data = length_bytes + header_bytes + data_bytes
             total_bytes = len(full_data)
 
-            if self.lsb_bits > 0:
-                lsb = self.lsb_bits
+            if self.lsb_bits > 0 or self.k_lsb:
+                if self.k_lsb:
+                    lsb = max(self.k_lsb.values()) if self.k_lsb else 1
+                    channels_n = self._channel_names(self.channel_mode)
+                else:
+                    lsb = self.lsb_bits
+                    channels_n = None
                 header_byte_count = 4 + len(header_bytes)
                 header_data = full_data[:header_byte_count]
                 payload_data = full_data[header_byte_count:]
                 payload_bits = np.unpackbits(np.frombuffer(payload_data, dtype=np.uint8))
 
                 header_channels_needed = header_byte_count
-                payload_channels_needed = (len(payload_bits) + lsb - 1) // lsb
+                if self.k_lsb:
+                    ch_sum = sum(self.k_lsb.get(chn, 1) for chn in channels_n)
+                    pixels_for_payload = int(np.ceil(len(payload_bits) / ch_sum))
+                    payload_channels_needed = pixels_for_payload * len(channels_n)
+                else:
+                    payload_channels_needed = (len(payload_bits) + lsb - 1) // lsb
                 total_channels_needed = header_channels_needed + payload_channels_needed
                 pixels_needed = (total_channels_needed + channels - 1) // channels
 
@@ -319,24 +457,27 @@ class ColorCryptCore:
 
                 flat[:header_channels_needed] = np.frombuffer(header_data, dtype=np.uint8)
 
-                chunk = flat[header_channels_needed:header_channels_needed + payload_channels_needed]
-                if lsb == 1:
-                    chunk = (chunk & 0xFE) | payload_bits[:len(chunk)]
-                elif lsb == 2:
-                    paired = payload_bits[0::2].astype(np.uint16) | (payload_bits[1::2].astype(np.uint16) << 1)
-                    chunk = (chunk & 0xFC) | paired[:len(chunk)].astype(np.uint8)
-                elif lsb == 3:
-                    triple = (payload_bits[0::3].astype(np.uint16) |
-                              (payload_bits[1::3].astype(np.uint16) << 1) |
-                              (payload_bits[2::3].astype(np.uint16) << 2))
-                    chunk = (chunk & 0xF8) | triple[:len(chunk)].astype(np.uint8)
-                elif lsb == 4:
-                    quad = (payload_bits[0::4].astype(np.uint16) |
-                            (payload_bits[1::4].astype(np.uint16) << 1) |
-                            (payload_bits[2::4].astype(np.uint16) << 2) |
-                            (payload_bits[3::4].astype(np.uint16) << 3))
-                    chunk = (chunk & 0xF0) | quad[:len(chunk)].astype(np.uint8)
-                flat[header_channels_needed:header_channels_needed + payload_channels_needed] = chunk
+                if self.k_lsb:
+                    flat = self._encode_lsb_k_lsb(flat, payload_bits, header_channels_needed, self.k_lsb, channels_n)
+                else:
+                    chunk = flat[header_channels_needed:header_channels_needed + payload_channels_needed]
+                    if lsb == 1:
+                        chunk = (chunk & 0xFE) | payload_bits[:len(chunk)]
+                    elif lsb == 2:
+                        paired = payload_bits[0::2].astype(np.uint16) | (payload_bits[1::2].astype(np.uint16) << 1)
+                        chunk = (chunk & 0xFC) | paired[:len(chunk)].astype(np.uint8)
+                    elif lsb == 3:
+                        triple = (payload_bits[0::3].astype(np.uint16) |
+                                  (payload_bits[1::3].astype(np.uint16) << 1) |
+                                  (payload_bits[2::3].astype(np.uint16) << 2))
+                        chunk = (chunk & 0xF8) | triple[:len(chunk)].astype(np.uint8)
+                    elif lsb == 4:
+                        quad = (payload_bits[0::4].astype(np.uint16) |
+                                (payload_bits[1::4].astype(np.uint16) << 1) |
+                                (payload_bits[2::4].astype(np.uint16) << 2) |
+                                (payload_bits[3::4].astype(np.uint16) << 3))
+                        chunk = (chunk & 0xF0) | quad[:len(chunk)].astype(np.uint8)
+                    flat[header_channels_needed:header_channels_needed + payload_channels_needed] = chunk
 
                 img = Image.fromarray(flat.reshape(img_height, img_width, channels) if channels > 1 else flat.reshape(img_height, img_width))
             else:
@@ -367,12 +508,31 @@ class ColorCryptCore:
             ext = OUTPUT_FORMATS.get(self.output_format, "png")
             output = os.path.join(output_dir, f"{base_name}.{ext}")
 
-            save_kwargs = {'format': self.output_format}
-            if self.output_format == 'WebP':
-                save_kwargs['lossless'] = True
+            if self.output_format == 'ZIP':
+                import io
+                buf = io.BytesIO()
+                if channels == 1:
+                    img.save(buf, format='PNG')
+                elif channels == 4:
+                    img.save(buf, format='PNG')
+                else:
+                    img.save(buf, format='PNG')
+                with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as zf:
+                    zf.writestr('data.png', buf.getvalue())
             else:
-                save_kwargs['optimize'] = True
-            img.save(output, **save_kwargs)
+                save_kwargs = {'format': self.output_format}
+                if self.output_format == 'WebP':
+                    save_kwargs['lossless'] = True
+                elif self.output_format == 'JPEG':
+                    save_kwargs['quality'] = 100
+                    save_kwargs['optimize'] = True
+                    if channels == 4:
+                        img = img.convert('RGB')
+                    elif channels == 1:
+                        img = img.convert('RGB')
+                else:
+                    save_kwargs['optimize'] = True
+                img.save(output, **save_kwargs)
 
             elapsed = time.time() - start_time
 
@@ -396,6 +556,9 @@ class ColorCryptCore:
 
     def decode(self, input_file_path, output_dir=None, password=None, key=None):
         self.cancel_event.clear()
+
+        if input_file_path.endswith('.zip'):
+            return self._decode_zip(input_file_path, output_dir, password, key)
 
         if input_file_path.endswith('chunks_info.json'):
             return self._decode_chunked(input_file_path, output_dir, password, key)
@@ -453,6 +616,7 @@ class ColorCryptCore:
             expected_len = None
             original_name = None
             lsb_bits = 0
+            k_lsb = None
 
             parts = header.split('|')
             for part in parts:
@@ -472,10 +636,37 @@ class ColorCryptCore:
                     original_name = part[5:]
                 elif part.startswith('LSB:'):
                     lsb_bits = int(part[4:])
+                elif part.startswith('KLSB:'):
+                    klsb_str = part[5:]
+                    k_lsb = {}
+                    i = 0
+                    while i < len(klsb_str):
+                        ch = klsb_str[i]
+                        i += 1
+                        d_str = ''
+                        while i < len(klsb_str) and klsb_str[i].isdigit():
+                            d_str += klsb_str[i]
+                            i += 1
+                        if d_str:
+                            k_lsb[ch] = int(d_str)
 
             if lsb_bits > 0:
                 header_byte_count = 4 + header_length
                 payload_bytes = self._decode_lsb_payload(data_bytes, header_byte_count, lsb_bits)
+            elif k_lsb:
+                header_byte_count = 4 + header_length
+                offset_pixel = header_byte_count // channels
+                if header_byte_count % channels:
+                    offset_pixel += 1
+                payload_start = offset_pixel * channels
+                if channels == 1:
+                    ch_mode = MODE_MONO
+                elif channels == 4:
+                    ch_mode = MODE_RGBA
+                else:
+                    ch_mode = MODE_RGB
+                channels_n = self._channel_names(ch_mode)
+                payload_bytes = self._decode_lsb_payload_k_lsb(data_bytes, payload_start, k_lsb, channels_n)
 
             if expected_len is not None and expected_len < len(payload_bytes):
                 payload_bytes = payload_bytes[:expected_len]
@@ -484,7 +675,7 @@ class ColorCryptCore:
 
             if encryption_metadata:
                 self._update_progress(60, 100, "Расшифровка...")
-                decrypted = self.decrypt_data_gcm(data_to_process, encryption_metadata, password, key)
+                decrypted = self.decrypt_data(data_to_process, encryption_metadata, password, key)
                 if decrypted is None:
                     raise ValueError("Неверный пароль или повреждённые данные")
                 data_to_process = decrypted
@@ -577,7 +768,7 @@ class ColorCryptCore:
                 data_to_process = data_to_process[:expected_len]
 
             if encryption_metadata:
-                decrypted = self.decrypt_data_gcm(data_to_process, encryption_metadata, password, key)
+                decrypted = self.decrypt_data(data_to_process, encryption_metadata, password, key)
                 if decrypted is None:
                     raise ValueError("Неверный пароль или повреждённые данные")
                 data_to_process = decrypted
@@ -663,6 +854,41 @@ class ColorCryptCore:
                 except Exception:
                     pass
 
+    def _decode_zip(self, zip_path, output_dir, password, key):
+        import tempfile
+        tmp = tempfile.mkdtemp()
+        try:
+            with zipfile.ZipFile(zip_path, 'r') as zf:
+                zf.extractall(tmp)
+            info_path = os.path.join(tmp, 'chunks_info.json')
+            if not os.path.exists(info_path):
+                png_files = sorted([f for f in os.listdir(tmp) if f.endswith('.png')])
+                if png_files:
+                    all_data = bytearray()
+                    for fn in png_files:
+                        r = self.decode(os.path.join(tmp, fn), tmp, password, key)
+                        if r['success']:
+                            with open(r['output_path'], 'rb') as f:
+                                all_data.extend(f.read())
+                    if output_dir is None:
+                        output_dir = self.output_dir or str(Path.cwd())
+                    os.makedirs(output_dir, exist_ok=True)
+                    out = os.path.join(output_dir, f"decoded_zip_{int(time.time())}")
+                    with open(out, 'wb') as f:
+                        f.write(all_data)
+                    return {'success': True, 'output_path': out, 'size': len(all_data)}
+                return {'success': False, 'error': 'ZIP не содержит данных ColorCrypt'}
+            with open(info_path, 'r') as f:
+                meta = json.load(f)
+            meta['chunk_files'] = [os.path.join(tmp, os.path.basename(p)) for p in meta['chunk_files']]
+            with open(info_path, 'w') as f:
+                json.dump(meta, f)
+            result = self._decode_chunked(info_path, output_dir, password, key)
+            return result
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def compress_data(self, data):
         if not self.compress_enabled:
             return data
@@ -699,7 +925,8 @@ class ColorCryptCore:
 
         original_filename = os.path.basename(input_file_path) if self.preserve_filename else None
 
-        if self.chunk_mode and len(data) > CHUNK_SIZES.get(self.chunk_size, 50*1024*1024):
+        chunk_limit = CHUNK_SIZES.get(self.chunk_size, 50*1024*1024)
+        if self.chunk_mode and len(data) > chunk_limit:
             self._update_progress(20, 100, "Разделение на чанки...")
             meta_path = self.encode_chunked(data, output_dir or self.output_dir or os.path.dirname(input_file_path), output_name, original_filename)
             if meta_path:
@@ -708,6 +935,13 @@ class ColorCryptCore:
                 return {'success': False, 'error': 'Ошибка чанкового кодирования'}
 
         result = self.encode_single(data, output_dir, output_name, original_filename)
+        if result['success'] and self.output_format == 'ZIP' and not result['output_path'].endswith('.zip'):
+            zip_path = result['output_path'] + '.zip'
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                zf.write(result['output_path'], os.path.basename(result['output_path']))
+            os.remove(result['output_path'])
+            result['output_path'] = zip_path
+            result['size'] = os.path.getsize(zip_path)
         return result
 
     def clear_sensitive_data(self):
@@ -1015,6 +1249,90 @@ class ColorCryptCore:
             return {'type': 'main', 'signature': 'V1|...', 'version': 1}
         return None
 
+    # ─── LSB Entropy Analysis ───────────────────────────────────────
+
+    @staticmethod
+    def _analyze_lsb_entropy(filepath):
+        try:
+            img = Image.open(filepath)
+            arr = np.array(img, dtype=np.uint8)
+
+            if arr.ndim == 2:
+                channels = {'L': arr.ravel()}
+            elif arr.ndim == 3:
+                names = ['R', 'G', 'B', 'A'][:arr.shape[2]]
+                channels = {n: arr[:, :, i].ravel() for i, n in enumerate(names)}
+            else:
+                return {'error': 'Unsupported image dimensions'}
+
+            results = {}
+            suspicious_count = 0
+            total_p_value = 0
+            num_channels = len(channels)
+
+            from math import erf, sqrt
+
+            for name, data in channels.items():
+                lsb = data & 1
+                n = len(lsb)
+                n0 = int(np.sum(lsb == 0))
+                n1 = n - n0
+                ratio = n1 / n if n > 0 else 0.5
+                expected = n / 2
+                chi2 = 0
+                if expected > 0:
+                    chi2 = ((n0 - expected) ** 2 / expected) + ((n1 - expected) ** 2 / expected)
+                if chi2 <= 0:
+                    p_value = 1.0
+                else:
+                    p_value = 1.0 - erf(sqrt(chi2 / 2))
+
+                is_suspicious = p_value > 0.95
+                if is_suspicious:
+                    suspicious_count += 1
+                total_p_value += p_value
+
+                results[name] = {
+                    'zeros': n0,
+                    'ones': n1,
+                    'ratio': ratio,
+                    'chi2': chi2,
+                    'p_value': p_value,
+                    'suspicious': is_suspicious
+                }
+
+            avg_p = total_p_value / num_channels if num_channels > 0 else 0
+            if suspicious_count >= 3 or (num_channels >= 3 and avg_p > 0.90):
+                level = 'HIGH'
+                suspicious = True
+            elif suspicious_count >= 1 or avg_p > 0.80:
+                level = 'MEDIUM'
+                suspicious = True
+            else:
+                level = 'LOW'
+                suspicious = False
+
+            return {
+                'suspicious': suspicious,
+                'level': level,
+                'channels': results,
+                'num_channels': num_channels,
+                'avg_p_value': avg_p
+            }
+        except Exception as e:
+            return {'error': str(e)}
+
+    def analyze_lsb_entropy(self, filepath):
+        result = self._analyze_lsb_entropy(filepath)
+        if 'error' not in result:
+            for ch, data in result['channels'].items():
+                self._log_debug(
+                    f"LSB entropy {ch}: ratio={data['ratio']:.4f}, "
+                    f"p={data['p_value']:.4f}, suspicious={data['suspicious']}\n"
+                )
+            self._log_debug(f"Overall LSB entropy: {result['level']}\n")
+        return result
+
 
 def _safe_print(msg):
     try:
@@ -1037,7 +1355,7 @@ def main_cli():
                         help='Цветовой режим: mono, rgb, rgba')
     parser.add_argument('--encode-mode', choices=['base64'], default='base64')
     parser.add_argument('--no-integrity', action='store_true')
-    parser.add_argument('--format', choices=['PNG', 'WebP', 'BMP', 'TIFF'], default='PNG')
+    parser.add_argument('--format', choices=list(OUTPUT_FORMATS.keys()), default='PNG')
     parser.add_argument('--chunk', action='store_true')
     parser.add_argument('--chunk-size', choices=['10MB', '50MB', '100MB', '250MB'], default='50MB')
     parser.add_argument('--no-preserve-name', action='store_true', help='Не сохранять оригинальное имя файла')
@@ -1048,8 +1366,22 @@ def main_cli():
     parser.add_argument('--scan-alpha', action='store_true', default=True, help='Сканировать альфа-канал')
     parser.add_argument('--scan-rgb', action='store_true', default=True, help='Сканировать RGB-каналы')
     parser.add_argument('--scan-layers', type=int, default=4, help='Максимум LSB-слоёв для сканирования')
+    parser.add_argument('--salt', type=str, default=None,
+                        help='Соль в hex (только с --password; по умолчанию случайная)')
 
     args = parser.parse_args()
+
+    if args.salt and not args.password:
+        _safe_print("Ошибка: --salt можно использовать только с --password")
+        sys.exit(1)
+
+    salt = None
+    if args.salt:
+        try:
+            salt = bytes.fromhex(args.salt)
+        except ValueError:
+            _safe_print("Ошибка: --salt должен быть в hex формате")
+            sys.exit(1)
 
     core = ColorCryptCore()
     core.set_settings(
@@ -1064,7 +1396,8 @@ def main_cli():
         chunk_mode=args.chunk,
         chunk_size=args.chunk_size,
         preserve_filename=not args.no_preserve_name,
-        lsb_bits=args.lsb_bits
+        lsb_bits=args.lsb_bits,
+        salt=salt
     )
 
     if args.mode == 'encode':

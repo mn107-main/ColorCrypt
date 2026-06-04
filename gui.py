@@ -109,11 +109,18 @@ class ColorCryptApp:
         self.chunk_size_var = tk.StringVar(value="50MB")
         self.preserve_filename_var = tk.BooleanVar(value=True)
         self.lsb_bits_var = tk.StringVar(value="0")
+        self.adaptive_lsb_var = tk.BooleanVar(value=False)
+        self.k_lsb_r_var = tk.StringVar(value="1")
+        self.k_lsb_g_var = tk.StringVar(value="2")
+        self.k_lsb_b_var = tk.StringVar(value="3")
+        self.k_lsb_a_var = tk.StringVar(value="1")
+        self.zip_mode_var = tk.BooleanVar(value=False)
 
         self.encryption_var = tk.BooleanVar(value=False)
         self.password_var = tk.StringVar(value="")
         self.confirm_password_var = tk.StringVar(value="")
         self.hint_var = tk.StringVar(value="")
+        self.salt_var = tk.StringVar(value="")
 
         self.lang_var = tk.StringVar(value="ru")
         self.dark_mode_var = tk.BooleanVar(value=False)
@@ -212,12 +219,18 @@ class ColorCryptApp:
         self.format_frame.config(text=self._tr("format_frame"))
         self.chunk_frame.config(text=self._tr("chunk_frame"))
         self.chunk_chk.config(text=self._tr("chunk_enable"))
+        self.zip_mode_chk.config(text=self._tr("zip_mode"))
         self.chunk_size_label.config(text=self._tr("chunk_size"))
         self.opt_frame.config(text=self._tr("options_frame"))
         self.integrity_chk.config(text=self._tr("integrity"))
         self.preserve_chk.config(text=self._tr("preserve_name"))
         self.lsb_label.config(text=self._tr("lsb_label"))
         self.lsb_hint_label.config(text=self._tr("lsb_hint"))
+        self.adaptive_lsb_chk.config(text=self._tr("adaptive_lsb"))
+        self.k_lsb_r_label.config(text=self._tr("k_lsb_r"))
+        self.k_lsb_g_label.config(text=self._tr("k_lsb_g"))
+        self.k_lsb_b_label.config(text=self._tr("k_lsb_b"))
+        self.k_lsb_a_label.config(text=self._tr("k_lsb_a"))
         self.output_dir_frame.config(text=self._tr("output_dir_frame"))
         self.output_dir_btn.config(text=self._tr("output_dir_btn"))
         if not self.output_dir_var.get():
@@ -235,6 +248,8 @@ class ColorCryptApp:
             self.strength_label.config(text=self._tr("empty_password"))
         self.hint_frame.config(text=self._tr("hint_frame"))
         self.hint_warn_label.config(text=self._tr("hint_warn"))
+        self.salt_label.config(text=self._tr("salt_label"))
+        self.salt_hint.config(text=self._tr("salt_hint"))
         self.encrypt_info_label.config(text=self._tr("encrypt_info"))
 
         self.batch_add_btn.config(text=self._tr("batch_add"))
@@ -293,6 +308,8 @@ class ColorCryptApp:
         self.scan_rgb_chk.config(text=self._tr("scan_rgb"))
         self.scan_depth_label.config(text=self._tr("scan_depth"))
         self.scan_btn.config(text=self._tr("scan_btn"))
+        if hasattr(self, 'entropy_btn'):
+            self.entropy_btn.config(text=self._tr("entropy_btn"))
         self.scan_result_frame.config(text=self._tr("scan_result_frame"))
 
         self.debug_opt_frame.config(text=self._tr("debug_options"))
@@ -390,6 +407,18 @@ class ColorCryptApp:
 
     def _update_core_settings(self):
         password = self.password_var.get() if self.encryption_var.get() else None
+        if self.adaptive_lsb_var.get():
+            k_lsb = (int(self.k_lsb_r_var.get()), int(self.k_lsb_g_var.get()),
+                     int(self.k_lsb_b_var.get()), int(self.k_lsb_a_var.get()))
+        else:
+            k_lsb = None
+        salt = None
+        salt_hex = self.salt_var.get().strip()
+        if salt_hex:
+            try:
+                salt = bytes.fromhex(salt_hex)
+            except ValueError:
+                pass
         self.core.set_settings(
             compress_enabled=self.compress_var.get(),
             compress_level=self.compress_level_var.get(),
@@ -404,7 +433,10 @@ class ColorCryptApp:
             chunk_mode=self.chunk_mode_var.get(),
             chunk_size=self.chunk_size_var.get(),
             preserve_filename=self.preserve_filename_var.get(),
-            lsb_bits=int(self.lsb_bits_var.get())
+            lsb_bits=int(self.lsb_bits_var.get()),
+            k_lsb=k_lsb,
+            zip_mode=self.zip_mode_var.get(),
+            salt=salt
         )
 
     def save_settings(self):
@@ -422,6 +454,13 @@ class ColorCryptApp:
             'encryption': self.encryption_var.get(),
             'preserve_filename': self.preserve_filename_var.get(),
             'lsb_bits': int(self.lsb_bits_var.get()),
+            'adaptive_lsb': self.adaptive_lsb_var.get(),
+            'k_lsb_r': int(self.k_lsb_r_var.get()),
+            'k_lsb_g': int(self.k_lsb_g_var.get()),
+            'k_lsb_b': int(self.k_lsb_b_var.get()),
+            'k_lsb_a': int(self.k_lsb_a_var.get()),
+            'zip_mode': self.zip_mode_var.get(),
+            'salt': self.salt_var.get(),
             'lang': self.lang_var.get(),
             'dark_mode': self.dark_mode_var.get(),
             'window_geometry': self.root.geometry(),
@@ -450,6 +489,13 @@ class ColorCryptApp:
                 self.encryption_var.set(settings.get('encryption', False))
                 self.preserve_filename_var.set(settings.get('preserve_filename', True))
                 self.lsb_bits_var.set(str(settings.get('lsb_bits', 0)))
+                self.adaptive_lsb_var.set(settings.get('adaptive_lsb', False))
+                self.k_lsb_r_var.set(str(settings.get('k_lsb_r', 1)))
+                self.k_lsb_g_var.set(str(settings.get('k_lsb_g', 2)))
+                self.k_lsb_b_var.set(str(settings.get('k_lsb_b', 3)))
+                self.k_lsb_a_var.set(str(settings.get('k_lsb_a', 1)))
+                self.zip_mode_var.set(settings.get('zip_mode', False))
+                self.salt_var.set(settings.get('salt', ''))
                 self.lang_var.set(settings.get('lang', 'ru'))
                 self.dark_mode_var.set(settings.get('dark_mode', False))
                 if settings.get('window_geometry'):
@@ -724,6 +770,10 @@ class ColorCryptApp:
                                          variable=self.chunk_mode_var, command=self._update_core_settings)
         self.chunk_chk.pack(anchor=tk.W)
 
+        self.zip_mode_chk = ttk.Checkbutton(self.chunk_frame, text=self._tr("zip_mode"),
+                                            variable=self.zip_mode_var, command=self._update_core_settings)
+        self.zip_mode_chk.pack(anchor=tk.W, padx=5, pady=2)
+
         cs_f = ttk.Frame(self.chunk_frame)
         cs_f.pack(pady=5, padx=20, fill=tk.X)
         self.chunk_size_label = ttk.Label(cs_f, text=self._tr("chunk_size"))
@@ -750,6 +800,31 @@ class ColorCryptApp:
                      values=[0, 1, 2, 3, 4], state="readonly", width=5).pack(side=tk.LEFT, padx=5)
         self.lsb_hint_label = ttk.Label(lsb_f, text=self._tr("lsb_hint"), foreground="gray")
         self.lsb_hint_label.pack(side=tk.LEFT, padx=2)
+
+        self.adaptive_lsb_chk = ttk.Checkbutton(self.opt_frame, text=self._tr("adaptive_lsb"),
+                                                 variable=self.adaptive_lsb_var,
+                                                 command=self._toggle_k_lsb_widgets)
+        self.adaptive_lsb_chk.pack(anchor=tk.W, padx=5, pady=2)
+
+        self.k_lsb_frame = ttk.Frame(self.opt_frame)
+        self.k_lsb_frame.pack(fill=tk.X, padx=20, pady=2)
+        self.k_lsb_r_label = ttk.Label(self.k_lsb_frame, text=self._tr("k_lsb_r"))
+        self.k_lsb_r_label.pack(side=tk.LEFT)
+        ttk.Spinbox(self.k_lsb_frame, from_=1, to=4, textvariable=self.k_lsb_r_var,
+                    width=3, command=self._update_core_settings).pack(side=tk.LEFT, padx=2)
+        self.k_lsb_g_label = ttk.Label(self.k_lsb_frame, text=self._tr("k_lsb_g"))
+        self.k_lsb_g_label.pack(side=tk.LEFT)
+        ttk.Spinbox(self.k_lsb_frame, from_=1, to=4, textvariable=self.k_lsb_g_var,
+                    width=3, command=self._update_core_settings).pack(side=tk.LEFT, padx=2)
+        self.k_lsb_b_label = ttk.Label(self.k_lsb_frame, text=self._tr("k_lsb_b"))
+        self.k_lsb_b_label.pack(side=tk.LEFT)
+        ttk.Spinbox(self.k_lsb_frame, from_=1, to=4, textvariable=self.k_lsb_b_var,
+                    width=3, command=self._update_core_settings).pack(side=tk.LEFT, padx=2)
+        self.k_lsb_a_label = ttk.Label(self.k_lsb_frame, text=self._tr("k_lsb_a"))
+        self.k_lsb_a_label.pack(side=tk.LEFT)
+        ttk.Spinbox(self.k_lsb_frame, from_=1, to=4, textvariable=self.k_lsb_a_var,
+                    width=3, command=self._update_core_settings).pack(side=tk.LEFT, padx=2)
+        self._toggle_k_lsb_widgets()
 
         self.output_dir_frame = ttk.LabelFrame(settings_frame, text=self._tr("output_dir_frame"))
         self.output_dir_frame.pack(pady=5, padx=10, fill=tk.X)
@@ -824,6 +899,15 @@ class ColorCryptApp:
         self.hint_entry.pack(fill=tk.X, padx=5, pady=5)
         self.hint_display = ttk.Label(self.hint_frame, text="", foreground="gray")
         self.hint_display.pack(pady=2)
+
+        salt_row = ttk.Frame(self.encrypt_frame)
+        salt_row.pack(fill=tk.X, pady=2)
+        self.salt_label = ttk.Label(salt_row, text=self._tr("salt_label"))
+        self.salt_label.pack(side=tk.LEFT)
+        self.salt_entry = ttk.Entry(salt_row, textvariable=self.salt_var, width=30)
+        self.salt_entry.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+        self.salt_hint = ttk.Label(salt_row, text=self._tr("salt_hint"), foreground="gray")
+        self.salt_hint.pack(side=tk.LEFT, padx=2)
 
         self.encrypt_info_label = ttk.Label(self.encrypt_frame, text=self._tr("encrypt_info"),
                                             justify=tk.LEFT, foreground="gray")
@@ -994,7 +1078,9 @@ class ColorCryptApp:
         scan_btn_f = ttk.Frame(scan_frame)
         scan_btn_f.pack(pady=10)
         self.scan_btn = ttk.Button(scan_btn_f, text=self._tr("scan_btn"), command=self._scan_process, width=20)
-        self.scan_btn.pack()
+        self.scan_btn.pack(side=tk.LEFT, padx=5)
+        self.entropy_btn = ttk.Button(scan_btn_f, text=self._tr("entropy_btn"), command=self._entropy_process, width=20)
+        self.entropy_btn.pack(side=tk.LEFT, padx=5)
 
         self.scan_result_frame = ttk.LabelFrame(scan_frame, text=self._tr("scan_result_frame"))
         self.scan_result_frame.pack(pady=5, padx=10, fill=tk.BOTH, expand=True)
@@ -1046,13 +1132,22 @@ class ColorCryptApp:
             self.btn_select.config(text=self._tr("select_decode_file"))
             self.file_label.config(text=self._tr("decode_hint"))
 
+    def _toggle_k_lsb_widgets(self):
+        show = self.adaptive_lsb_var.get()
+        for child in self.k_lsb_frame.winfo_children():
+            child.configure(state=tk.NORMAL if show else tk.DISABLED)
+        self._update_core_settings()
+
     def select_file(self):
         if self.mode_var.get() == "encode":
             ft = [("All files", "*.*"), ("Text files", "*.txt"), ("Binary files", "*.bin")]
             filename = filedialog.askopenfilename(filetypes=ft, title=self._tr("select_encode"))
         else:
-            ft = [("Image files", "*.png *.webp *.bmp"), ("PNG image", "*.png"),
-                  ("WebP image", "*.webp"), ("BMP image", "*.bmp")]
+            ft = [("Image files", "*.png *.webp *.bmp *.tiff *.jpg *.jpeg"),
+                  ("PNG image", "*.png"), ("WebP image", "*.webp"), ("BMP image", "*.bmp"),
+                  ("TIFF image", "*.tiff"),
+                  ("JPEG image", "*.jpg *.jpeg"),
+                  ("ZIP archive", "*.zip")]
             filename = filedialog.askopenfilename(filetypes=ft, title=self._tr("select_decode_img"))
 
         if filename:
@@ -1446,6 +1541,8 @@ class ColorCryptApp:
             ext = [("MP4 files", "*.mp4")]
         elif codec == 'MP3':
             ext = [("MP3 files", "*.mp3")]
+        elif 'Video' in codec:
+            ext = [("Video files", "*.mp4 *.avi *.mov *.mkv *.webm")]
         path = filedialog.askopenfilename(title=self._tr("select_media"), filetypes=ext)
         if path:
             self.media_input_path = path
@@ -1505,6 +1602,8 @@ class ColorCryptApp:
                         result = media.encode_mp4(self.media_input_path, data, self.media_output_path)
                     elif codec == 'MP3':
                         result = media.encode_mp3(self.media_input_path, data, self.media_output_path)
+                    elif 'Video' in codec:
+                        result = media.encode_video(self.media_input_path, data, self.media_output_path)
                     else:
                         result = {'success': False, 'error': f'Unsupported codec: {codec}'}
                 else:
@@ -1514,6 +1613,8 @@ class ColorCryptApp:
                         result = media.decode_mp4(self.media_input_path, self.media_output_path)
                     elif codec == 'MP3':
                         result = media.decode_mp3(self.media_input_path, self.media_output_path)
+                    elif 'Video' in codec:
+                        result = media.decode_video(self.media_input_path, self.media_output_path)
                     else:
                         result = {'success': False, 'error': f'Unsupported codec: {codec}'}
 
@@ -1586,6 +1687,55 @@ class ColorCryptApp:
                 self.scan_result_text.insert(tk.END, self._tr("scan_ver", r['header']['version']))
                 self.scan_result_text.insert(tk.END, self._tr("scan_sep"))
             self.scan_status_label.config(text=self._tr("status_found_headers", len(results)))
+
+
+    def _entropy_process(self):
+        if not hasattr(self, 'scan_file_path') or not self.scan_file_path:
+            messagebox.showwarning(self._tr("notice"), self._tr("err_scan_no_file"))
+            return
+
+        self.scan_result_text.delete(1.0, tk.END)
+        self.scan_result_text.insert(tk.END, self._tr("entropy_working") + "\n")
+        self.scan_status_label.config(text=self._tr("status_scanning"))
+
+        def task():
+            try:
+                result = self.core.analyze_lsb_entropy(self.scan_file_path)
+                self.root.after(0, lambda: self._entropy_callback(result))
+            except Exception as e:
+                self.root.after(0, lambda: self._scan_callback([], str(e)))
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _entropy_callback(self, result):
+        self.scan_result_text.delete(1.0, tk.END)
+        if 'error' in result:
+            self.scan_result_text.insert(tk.END, self._tr("media_error", result['error']) + "\n")
+            self.scan_status_label.config(text=self._tr("status_error"))
+            return
+
+        self.scan_result_text.insert(tk.END, self._tr("entropy_result"))
+        for ch, data in result['channels'].items():
+            self.scan_result_text.insert(tk.END, self._tr("entropy_channel",
+                ch, data['zeros'], data['ones'], data['ratio']))
+            self.scan_result_text.insert(tk.END, self._tr("entropy_chi2",
+                data['chi2'], data['p_value']))
+            if data['suspicious']:
+                self.scan_result_text.insert(tk.END, self._tr("entropy_suspicious") + "\n")
+            else:
+                self.scan_result_text.insert(tk.END, self._tr("entropy_normal") + "\n")
+
+        level_text = {
+            'LOW': self._tr("entropy_level_low"),
+            'MEDIUM': self._tr("entropy_level_medium"),
+            'HIGH': self._tr("entropy_level_high")
+        }.get(result['level'], result['level'])
+        self.scan_result_text.insert(tk.END, self._tr("entropy_overall", level_text))
+
+        if result['suspicious']:
+            self.scan_status_label.config(text=self._tr("status_found_headers", 0))
+        else:
+            self.scan_status_label.config(text=self._tr("status_ready"))
 
 
 def main():

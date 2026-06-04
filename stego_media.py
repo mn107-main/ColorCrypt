@@ -38,7 +38,7 @@ AVAILABLE_CODECS = []
 if HAS_IMAGEIO:
     AVAILABLE_CODECS.append('GIF')
 if HAS_FFMPEG:
-    AVAILABLE_CODECS.extend(['MP4', 'MP3'])
+    AVAILABLE_CODECS.extend(['MP4', 'MP3', 'Video (FFmpeg)'])
 if HAS_PYDUB:
     if 'MP3' not in AVAILABLE_CODECS:
         AVAILABLE_CODECS.append('MP3')
@@ -313,3 +313,131 @@ class MediaSteganography:
             f.write(data_bytes)
 
         return {'success': True, 'output_path': output_path, 'size': len(data_bytes)}
+
+    def encode_video(self, input_video_path, data, output_path,
+                     codec='libx264', bitrate='2M', fps=None):
+        if not HAS_FFMPEG:
+            raise ImportError("Установите ffmpeg (системный) для этой функции")
+
+        tmp = Path(tempfile.mkdtemp())
+        raw_dir = tmp / 'raw'
+        raw_dir.mkdir()
+        stego_dir = tmp / 'stego'
+        stego_dir.mkdir()
+
+        try:
+            probe = subprocess.run(
+                ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+                 '-show_entries', 'stream=r_frame_rate,width,height',
+                 '-of', 'csv=p=0', input_video_path],
+                capture_output=True, text=True, check=True
+            )
+            parts = probe.stdout.strip().split(',')
+            width, height = int(parts[0]), int(parts[1])
+            fps_val = fps or eval(parts[2]) if '/' in parts[2] else float(parts[2])
+
+            subprocess.run(
+                ['ffmpeg', '-i', input_video_path, '-q:v', '1',
+                 os.path.join(str(raw_dir), 'frame_%05d.png')],
+                check=True, capture_output=True
+            )
+
+            frame_files = sorted(os.listdir(str(raw_dir)))
+            if not frame_files:
+                raise ValueError("Видео не содержит кадров")
+
+            data_bytes = data if isinstance(data, bytes) else data.encode('utf-8')
+            header = struct.pack('>I', len(data_bytes))
+            payload = header + data_bytes
+            bits = []
+            for byte in payload:
+                for b in range(8):
+                    bits.append((byte >> b) & 1)
+
+            gb_channels = 2
+            total_capacity = len(frame_files) * width * height * gb_channels
+            if len(bits) > total_capacity:
+                raise ValueError(f"Данные слишком велики: нужно {len(bits)} бит, доступно {total_capacity}")
+
+            bit_idx = 0
+            for fi, fn in enumerate(frame_files):
+                if bit_idx >= len(bits):
+                    break
+                from PIL import Image
+                import numpy as np
+                frame_path = os.path.join(str(raw_dir), fn)
+                img = Image.open(frame_path).convert('RGB')
+                arr = np.array(img, dtype=np.uint8)
+                gb_flat = arr[:, :, 1:3].reshape(-1)
+                for pi in range(len(gb_flat)):
+                    if bit_idx >= len(bits):
+                        break
+                    gb_flat[pi] = (gb_flat[pi] & 0xFE) | bits[bit_idx]
+                    bit_idx += 1
+                arr[:, :, 1:3] = gb_flat.reshape(height, width, 2)
+                Image.fromarray(arr).save(os.path.join(str(stego_dir), fn))
+                self._progress(fi, len(frame_files), f"Кадр {fi+1}/{len(frame_files)}")
+
+            subprocess.run(
+                ['ffmpeg', '-framerate', str(fps_val), '-i',
+                 os.path.join(str(stego_dir), 'frame_%05d.png'),
+                 '-c:v', codec, '-b:v', bitrate, '-pix_fmt', 'yuv420p',
+                 '-y', output_path],
+                check=True, capture_output=True
+            )
+
+            return {'success': True, 'output_path': output_path, 'frames': len(frame_files)}
+
+        except subprocess.CalledProcessError as e:
+            return {'success': False, 'error': f"FFmpeg ошибка: {e.stderr.decode() if e.stderr else str(e)}"}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def decode_video(self, input_video_path, output_path):
+        if not HAS_FFMPEG:
+            raise ImportError("Установите ffmpeg (системный) для этой функции")
+
+        tmp = Path(tempfile.mkdtemp())
+        frames_dir = tmp / 'frames'
+        frames_dir.mkdir()
+
+        try:
+            subprocess.run(
+                ['ffmpeg', '-i', input_video_path, '-q:v', '1',
+                 os.path.join(str(frames_dir), 'frame_%05d.png')],
+                check=True, capture_output=True
+            )
+
+            frame_files = sorted(os.listdir(str(frames_dir)))
+            if not frame_files:
+                raise ValueError("Видео не содержит кадров")
+
+            from PIL import Image
+            import numpy as np
+            all_bits = []
+            for fi, fn in enumerate(frame_files):
+                frame_path = os.path.join(str(frames_dir), fn)
+                img = Image.open(frame_path).convert('RGB')
+                arr = np.array(img, dtype=np.uint8)
+                gb_flat = arr[:, :, 1:3].reshape(-1)
+                for px in gb_flat:
+                    all_bits.append(px & 1)
+                self._progress(fi, len(frame_files), f"Кадр {fi+1}/{len(frame_files)}")
+
+            data_bytes = self._extract_header_and_data(all_bits)
+
+            with open(output_path, 'wb') as f:
+                f.write(data_bytes)
+
+            return {'success': True, 'output_path': output_path, 'size': len(data_bytes)}
+
+        except subprocess.CalledProcessError as e:
+            return {'success': False, 'error': f"FFmpeg ошибка: {e.stderr.decode() if e.stderr else str(e)}"}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
