@@ -116,6 +116,13 @@ class ColorCryptApp:
         self.k_lsb_a_var = tk.StringVar(value="1")
         self.zip_mode_var = tk.BooleanVar(value=False)
         self.ecc_var = tk.BooleanVar(value=False)
+        self.ecc_level_var = tk.StringVar(value="0")
+        self.key_var = tk.StringVar(value="")
+        self.psychovisual_var = tk.BooleanVar(value=False)
+        self.streaming_var = tk.BooleanVar(value=False)
+
+        self.img_compare_orig_path = ""
+        self.img_compare_encoded_path = ""
 
         self.encryption_var = tk.BooleanVar(value=False)
         self.password_var = tk.StringVar(value="")
@@ -139,6 +146,9 @@ class ColorCryptApp:
         self.media_mode_var = tk.StringVar(value="encode")
         self.media_use_alpha_var = tk.BooleanVar(value=True)
 
+        self.ecc_level_var.trace('w', lambda *a: self._update_core_settings())
+        self.key_var.trace('w', lambda *a: self._update_core_settings())
+        self.psychovisual_var.trace('w', lambda *a: self._update_core_settings())
         self.lang_var.trace('w', lambda *a: self._on_lang_change())
         self.dark_mode_var.trace('w', lambda *a: self._apply_theme())
 
@@ -187,7 +197,7 @@ class ColorCryptApp:
         tabs = [
             self._tr("main_tab"), self._tr("settings_tab"), self._tr("security_tab"),
             self._tr("batch_tab"), self._tr("iii_tab"), self._tr("media_tab"),
-            self._tr("scanner_tab"), self._tr("debug_tab")
+            self._tr("scanner_tab"), self._tr("img_compare_tab"), self._tr("debug_tab")
         ]
         for i, tab_text in enumerate(tabs):
             self.notebook.tab(i, text=tab_text)
@@ -311,7 +321,22 @@ class ColorCryptApp:
         self.scan_btn.config(text=self._tr("scan_btn"))
         if hasattr(self, 'entropy_btn'):
             self.entropy_btn.config(text=self._tr("entropy_btn"))
+        if hasattr(self, 'rs_btn'):
+            self.rs_btn.config(text=self._tr("rs_btn"))
         self.scan_result_frame.config(text=self._tr("scan_result_frame"))
+
+        if hasattr(self, 'compare_orig_frame'):
+            self.compare_orig_frame.config(text=self._tr("img_compare_orig"))
+            self.compare_enc_frame.config(text=self._tr("img_compare_encoded"))
+            self.compare_result_frame.config(text=self._tr("img_compare_diff"))
+            self.compare_orig_label.config(text=self.img_compare_orig_path or self._tr("iii_not_selected"))
+            self.compare_encoded_label.config(text=self.img_compare_encoded_path or self._tr("iii_not_selected"))
+            self.compare_btn.config(text=self._tr("img_compare_btn"))
+            self.compare_save_btn.config(text=self._tr("save_as"))
+            if hasattr(self, 'diff_canvas'):
+                parent = self.diff_canvas.master
+                if isinstance(parent, ttk.LabelFrame):
+                    parent.config(text=self._tr("diff_preview"))
 
         self.debug_opt_frame.config(text=self._tr("debug_options"))
         self.debug_chk.config(text=self._tr("debug_mode"))
@@ -403,11 +428,15 @@ class ColorCryptApp:
         if hasattr(self, 'status_label'):
             self.status_label.configure(background=c["status_bg"], foreground=c["fg"])
 
+        if hasattr(self, 'diff_canvas'):
+            self.diff_canvas.configure(bg=c.get("text_bg", "#1e1e1e"))
+
         self._theme_active = True
         self.root.update_idletasks()
 
     def _update_core_settings(self):
         password = self.password_var.get() if self.encryption_var.get() else None
+        key = self.key_var.get().strip() if self.encryption_var.get() and self.key_var.get().strip() else None
         if self.adaptive_lsb_var.get():
             k_lsb = (int(self.k_lsb_r_var.get()), int(self.k_lsb_g_var.get()),
                      int(self.k_lsb_b_var.get()), int(self.k_lsb_a_var.get()))
@@ -427,18 +456,21 @@ class ColorCryptApp:
             integrity_enabled=self.integrity_var.get(),
             encryption_enabled=self.encryption_var.get(),
             password=password,
+            key=key,
             output_format=self.output_format_var.get(),
             make_square=False,
             output_dir=self.output_dir_var.get() if self.output_dir_var.get() else None,
             encode_mode=self.encode_mode_var.get(),
-            chunk_mode=self.chunk_mode_var.get(),
+            chunk_mode=self.chunk_mode_var.get() or self.streaming_var.get(),
             chunk_size=self.chunk_size_var.get(),
             preserve_filename=self.preserve_filename_var.get(),
             lsb_bits=int(self.lsb_bits_var.get()),
             k_lsb=k_lsb,
             zip_mode=self.zip_mode_var.get(),
             salt=salt,
-            ecc_enabled=self.ecc_var.get()
+            ecc_enabled=self.ecc_var.get(),
+            ecc_level=int(self.ecc_level_var.get()),
+            psychovisual_mode=self.psychovisual_var.get()
         )
 
     def save_settings(self):
@@ -463,6 +495,10 @@ class ColorCryptApp:
             'k_lsb_a': int(self.k_lsb_a_var.get()),
             'zip_mode': self.zip_mode_var.get(),
             'ecc': self.ecc_var.get(),
+            'ecc_level': int(self.ecc_level_var.get()),
+            'key': self.key_var.get(),
+            'psychovisual': self.psychovisual_var.get(),
+            'streaming': self.streaming_var.get(),
             'salt': self.salt_var.get(),
             'lang': self.lang_var.get(),
             'dark_mode': self.dark_mode_var.get(),
@@ -499,6 +535,10 @@ class ColorCryptApp:
                 self.k_lsb_a_var.set(str(settings.get('k_lsb_a', 1)))
                 self.zip_mode_var.set(settings.get('zip_mode', False))
                 self.ecc_var.set(settings.get('ecc', False))
+                self.ecc_level_var.set(str(settings.get('ecc_level', 0)))
+                self.key_var.set(settings.get('key', ''))
+                self.psychovisual_var.set(settings.get('psychovisual', False))
+                self.streaming_var.set(settings.get('streaming', False))
                 self.salt_var.set(settings.get('salt', ''))
                 self.lang_var.set(settings.get('lang', 'ru'))
                 self.dark_mode_var.set(settings.get('dark_mode', False))
@@ -651,6 +691,12 @@ class ColorCryptApp:
         if hasattr(self, 'media_data_label'):
             self.media_data_label.drop_target_register(DND_FILES)
             self.media_data_label.dnd_bind('<<Drop>>', self._on_media_data_drop)
+        if hasattr(self, 'compare_orig_label'):
+            self.compare_orig_label.drop_target_register(DND_FILES)
+            self.compare_orig_label.dnd_bind('<<Drop>>', self._on_compare_orig_drop)
+        if hasattr(self, 'compare_encoded_label'):
+            self.compare_encoded_label.drop_target_register(DND_FILES)
+            self.compare_encoded_label.dnd_bind('<<Drop>>', self._on_compare_enc_drop)
 
     def on_file_drop(self, event):
         files = event.data.strip('{}')
@@ -689,6 +735,18 @@ class ColorCryptApp:
             self.media_data_file = files.split()[0]
             self.media_data_label.config(text=os.path.basename(self.media_data_file))
 
+    def _on_compare_orig_drop(self, event):
+        files = event.data.strip('{}')
+        if files:
+            self.img_compare_orig_path = files.split()[0]
+            self.compare_orig_label.config(text=os.path.basename(self.img_compare_orig_path))
+
+    def _on_compare_enc_drop(self, event):
+        files = event.data.strip('{}')
+        if files:
+            self.img_compare_encoded_path = files.split()[0]
+            self.compare_encoded_label.config(text=os.path.basename(self.img_compare_encoded_path))
+
     def create_widgets(self):
         self.root.title(self._tr("app_title", CURRENT_VERSION))
         self.root.geometry("1200x900")
@@ -717,6 +775,61 @@ class ColorCryptApp:
 
         scan_frame = ttk.Frame(self.notebook)
         self.notebook.add(scan_frame, text=self._tr("scanner_tab"))
+
+        compare_frame = ttk.Frame(self.notebook)
+        self.notebook.add(compare_frame, text=self._tr("img_compare_tab"))
+
+        top_row = ttk.Frame(compare_frame)
+        top_row.pack(fill=tk.X, padx=5, pady=5)
+
+        self.compare_orig_frame = ttk.LabelFrame(top_row, text=self._tr("img_compare_orig"), width=380)
+        self.compare_orig_frame.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+        self.compare_orig_frame.pack_propagate(False)
+        btn_orig_frame = ttk.Frame(self.compare_orig_frame)
+        btn_orig_frame.pack(pady=5)
+        ttk.Button(btn_orig_frame, text=self._tr("img_compare_select_orig"),
+                   command=self._compare_select_original).pack(side=tk.LEFT, padx=2)
+        self.compare_orig_label = ttk.Label(self.compare_orig_frame, text=self._tr("iii_not_selected"), foreground="gray")
+        self.compare_orig_label.pack(pady=2)
+
+        self.compare_enc_frame = ttk.LabelFrame(top_row, text=self._tr("img_compare_encoded"), width=380)
+        self.compare_enc_frame.pack(side=tk.RIGHT, padx=5, fill=tk.X, expand=True)
+        self.compare_enc_frame.pack_propagate(False)
+        btn_enc_frame = ttk.Frame(self.compare_enc_frame)
+        btn_enc_frame.pack(pady=5)
+        ttk.Button(btn_enc_frame, text=self._tr("img_compare_select_encoded"),
+                   command=self._compare_select_encoded).pack(side=tk.LEFT, padx=2)
+        self.compare_encoded_label = ttk.Label(self.compare_enc_frame, text=self._tr("iii_not_selected"), foreground="gray")
+        self.compare_encoded_label.pack(pady=2)
+
+        btn_frame = ttk.Frame(compare_frame)
+        btn_frame.pack(pady=5)
+        self.compare_btn = ttk.Button(btn_frame, text=self._tr("img_compare_btn"),
+                   command=self._compare_images, width=15)
+        self.compare_btn.pack(side=tk.LEFT, padx=3)
+        self.compare_save_btn = ttk.Button(btn_frame, text=self._tr("save_as"),
+                   command=self._compare_save_diff, state=tk.DISABLED, width=12)
+        self.compare_save_btn.pack(side=tk.LEFT, padx=3)
+
+        mid_frame = ttk.Frame(compare_frame)
+        mid_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=2)
+
+        self.compare_result_frame = ttk.LabelFrame(mid_frame, text=self._tr("img_compare_diff"), width=350)
+        self.compare_result_frame.pack(side=tk.LEFT, padx=3, fill=tk.BOTH, expand=False)
+        self.compare_result_frame.pack_propagate(False)
+        self.compare_result_text = scrolledtext.ScrolledText(self.compare_result_frame, height=10, font=("Courier", 9))
+        self.compare_result_text.pack(fill=tk.BOTH, expand=True, padx=3, pady=3)
+
+        diff_preview_frame = ttk.LabelFrame(mid_frame, text=self._tr("diff_preview"))
+        diff_preview_frame.pack(side=tk.RIGHT, padx=3, fill=tk.BOTH, expand=True)
+        self.diff_canvas = tk.Canvas(diff_preview_frame, bg=self.dark_mode_var.get() and "#1e1e1e" or "#ffffff",
+                                      highlightthickness=0)
+        self.diff_canvas.pack(fill=tk.BOTH, expand=True)
+
+        self.compare_status_label = ttk.Label(compare_frame, text=self._tr("ready"), foreground="gray")
+        self.compare_status_label.pack(pady=3)
+
+        self._diff_image_tk = None
 
         debug_frame = ttk.Frame(self.notebook)
         self.notebook.add(debug_frame, text=self._tr("debug_tab"))
@@ -823,6 +936,12 @@ class ColorCryptApp:
                                          variable=self.chunk_mode_var, command=self._update_core_settings)
         self.chunk_chk.pack(anchor=tk.W)
 
+        self.streaming_chk = ttk.Checkbutton(self.chunk_frame, text=self._tr("streaming_mode"),
+                                             variable=self.streaming_var,
+                                             command=self._update_core_settings)
+        self.streaming_chk.pack(anchor=tk.W, padx=5, pady=2)
+        ttk.Label(self.chunk_frame, text=self._tr("streaming_hint"), foreground="gray").pack(anchor=tk.W, padx=20)
+
         self.zip_mode_chk = ttk.Checkbutton(self.chunk_frame, text=self._tr("zip_mode"),
                                             variable=self.zip_mode_var, command=self._update_core_settings)
         self.zip_mode_chk.pack(anchor=tk.W, padx=5, pady=2)
@@ -844,6 +963,26 @@ class ColorCryptApp:
         self.ecc_chk = ttk.Checkbutton(self.opt_frame, text=self._tr("ecc_label"),
                                        variable=self.ecc_var, command=self._update_core_settings)
         self.ecc_chk.pack(anchor=tk.W, pady=2)
+
+        ecc_level_f = ttk.Frame(self.opt_frame)
+        ecc_level_f.pack(fill=tk.X, padx=25, pady=2)
+        ttk.Label(ecc_level_f, text=self._tr("ecc_level_label")).pack(side=tk.LEFT)
+        ttk.Combobox(ecc_level_f, textvariable=self.ecc_level_var,
+                     values=["0", "1", "2", "3"], state="readonly", width=5).pack(side=tk.LEFT, padx=5)
+        ttk.Label(ecc_level_f, text=self._tr("ecc_level_0"), foreground="gray").pack(side=tk.LEFT)
+
+        def update_ecc_level_hint(*a):
+            hints = {"0": self._tr("ecc_level_0"), "1": self._tr("ecc_level_1"),
+                     "2": self._tr("ecc_level_2"), "3": self._tr("ecc_level_3")}
+            for child in ecc_level_f.winfo_children():
+                if isinstance(child, ttk.Label) and child.cget("foreground") == "gray":
+                    child.config(text=hints.get(self.ecc_level_var.get(), ""))
+        self.ecc_level_var.trace('w', update_ecc_level_hint)
+
+        self.psychovisual_chk = ttk.Checkbutton(self.opt_frame, text=self._tr("psychovisual_chk"),
+                                                variable=self.psychovisual_var,
+                                                command=self._update_core_settings)
+        self.psychovisual_chk.pack(anchor=tk.W, padx=5, pady=2)
 
         self.preserve_chk = ttk.Checkbutton(self.opt_frame, text=self._tr("preserve_name"),
                                             variable=self.preserve_filename_var, command=self._update_core_settings)
@@ -956,6 +1095,15 @@ class ColorCryptApp:
         self.hint_entry.pack(fill=tk.X, padx=5, pady=5)
         self.hint_display = ttk.Label(self.hint_frame, text="", foreground="gray")
         self.hint_display.pack(pady=2)
+
+        key_row = ttk.Frame(self.encrypt_frame)
+        key_row.pack(fill=tk.X, pady=2)
+        self.key_label = ttk.Label(key_row, text=self._tr("key_label"))
+        self.key_label.pack(side=tk.LEFT)
+        self.key_entry = ttk.Entry(key_row, textvariable=self.key_var, width=30)
+        self.key_entry.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+        self.key_hint = ttk.Label(key_row, text=self._tr("key_hint"), foreground="gray")
+        self.key_hint.pack(side=tk.LEFT, padx=2)
 
         salt_row = ttk.Frame(self.encrypt_frame)
         salt_row.pack(fill=tk.X, pady=2)
@@ -1138,11 +1286,22 @@ class ColorCryptApp:
         self.scan_btn.pack(side=tk.LEFT, padx=5)
         self.entropy_btn = ttk.Button(scan_btn_f, text=self._tr("entropy_btn"), command=self._entropy_process, width=20)
         self.entropy_btn.pack(side=tk.LEFT, padx=5)
+        self.rs_btn = ttk.Button(scan_btn_f, text=self._tr("rs_btn"), command=self._rs_process, width=20)
+        self.rs_btn.pack(side=tk.LEFT, padx=5)
+
+        self.scan_progress = ttk.Progressbar(scan_frame, mode='indeterminate', length=400)
+        self.scan_progress.pack(pady=2)
 
         self.scan_result_frame = ttk.LabelFrame(scan_frame, text=self._tr("scan_result_frame"))
         self.scan_result_frame.pack(pady=5, padx=10, fill=tk.BOTH, expand=True)
         self.scan_result_text = scrolledtext.ScrolledText(self.scan_result_frame, height=12, font=("Courier", 9))
         self.scan_result_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        scan_save_btn_frame = ttk.Frame(self.scan_result_frame)
+        scan_save_btn_frame.pack(fill=tk.X, padx=5, pady=2)
+        self.scan_save_btn = ttk.Button(scan_save_btn_frame, text=self._tr("save_as"),
+                                        command=self._scan_save_result, width=12)
+        self.scan_save_btn.pack(side=tk.RIGHT)
 
         self.scan_status_label = ttk.Label(scan_frame, text=self._tr("ready"), foreground="gray")
         self.scan_status_label.pack(pady=5)
@@ -1602,6 +1761,10 @@ class ColorCryptApp:
             ext = [("WAV files", "*.wav")]
         elif codec == 'FLAC':
             ext = [("FLAC files", "*.flac")]
+        elif codec == 'AAC':
+            ext = [("AAC files", "*.aac *.m4a")]
+        elif codec == 'OGG':
+            ext = [("OGG files", "*.ogg")]
         elif 'Video' in codec:
             ext = [("Video files", "*.mp4 *.avi *.mov *.mkv *.webm")]
         path = filedialog.askopenfilename(title=self._tr("select_media"), filetypes=ext)
@@ -1640,7 +1803,8 @@ class ColorCryptApp:
             return
 
         if not self.media_output_path:
-            ext_map = {'GIF': 'gif', 'MP4': 'mp4', 'MP3': 'mp3', 'WAV': 'wav', 'FLAC': 'flac', 'Video (FFmpeg)': 'mp4'}
+            ext_map = {'GIF': 'gif', 'MP4': 'mp4', 'MP3': 'mp3', 'WAV': 'wav', 'FLAC': 'flac',
+                       'AAC': 'aac', 'OGG': 'ogg', 'Video (FFmpeg)': 'mp4'}
             ext = ext_map.get(codec, 'bin') if mode == "encode" else "bin"
             out = filedialog.asksaveasfilename(title=self._tr("select_save_as"),
                                                defaultextension=f".{ext}",
@@ -1669,6 +1833,10 @@ class ColorCryptApp:
                         result = media.encode_wav(self.media_input_path, data, self.media_output_path)
                     elif codec == 'FLAC':
                         result = media.encode_flac(self.media_input_path, data, self.media_output_path)
+                    elif codec == 'AAC':
+                        result = media.encode_aac(self.media_input_path, data, self.media_output_path)
+                    elif codec == 'OGG':
+                        result = media.encode_ogg(self.media_input_path, data, self.media_output_path)
                     elif 'Video' in codec:
                         result = media.encode_video(self.media_input_path, data, self.media_output_path)
                     else:
@@ -1684,6 +1852,10 @@ class ColorCryptApp:
                         result = media.decode_wav(self.media_input_path, self.media_output_path)
                     elif codec == 'FLAC':
                         result = media.decode_flac(self.media_input_path, self.media_output_path)
+                    elif codec == 'AAC':
+                        result = media.decode_aac(self.media_input_path, self.media_output_path)
+                    elif codec == 'OGG':
+                        result = media.decode_ogg(self.media_input_path, self.media_output_path)
                     elif 'Video' in codec:
                         result = media.decode_video(self.media_input_path, self.media_output_path)
                     else:
@@ -1721,6 +1893,7 @@ class ColorCryptApp:
         self.scan_result_text.delete(1.0, tk.END)
         self.scan_result_text.insert(tk.END, self._tr("scan_working") + "\n")
         self.scan_status_label.config(text=self._tr("status_scanning"))
+        self.scan_progress.start(10)
 
         def task():
             try:
@@ -1737,6 +1910,7 @@ class ColorCryptApp:
         threading.Thread(target=task, daemon=True).start()
 
     def _scan_callback(self, results, error=None):
+        self.scan_progress.stop()
         self.scan_result_text.delete(1.0, tk.END)
         if error:
             self.scan_result_text.insert(tk.END, self._tr("media_error", error) + "\n")
@@ -1751,9 +1925,14 @@ class ColorCryptApp:
             self.scan_result_text.insert(tk.END, self._tr("scan_found", len(results)))
             for r in results:
                 htype = r['header'].get('type', '?')
+                method = r.get('detected_method', '?')
+                est_size = r.get('estimated_data_size', '?')
                 self.scan_result_text.insert(tk.END, self._tr("scan_channel", r['channel']))
                 self.scan_result_text.insert(tk.END, self._tr("scan_lsb", r['bits']))
                 self.scan_result_text.insert(tk.END, self._tr("scan_type", htype))
+                self.scan_result_text.insert(tk.END, self._tr("scan_method", method))
+                if est_size:
+                    self.scan_result_text.insert(tk.END, self._tr("scan_data_size", est_size))
                 self.scan_result_text.insert(tk.END, self._tr("scan_sig", r['header']['signature']))
                 self.scan_result_text.insert(tk.END, self._tr("scan_ver", r['header']['version']))
                 self.scan_result_text.insert(tk.END, self._tr("scan_sep"))
@@ -1768,6 +1947,7 @@ class ColorCryptApp:
         self.scan_result_text.delete(1.0, tk.END)
         self.scan_result_text.insert(tk.END, self._tr("entropy_working") + "\n")
         self.scan_status_label.config(text=self._tr("status_scanning"))
+        self.scan_progress.start(10)
 
         def task():
             try:
@@ -1779,6 +1959,7 @@ class ColorCryptApp:
         threading.Thread(target=task, daemon=True).start()
 
     def _entropy_callback(self, result):
+        self.scan_progress.stop()
         self.scan_result_text.delete(1.0, tk.END)
         if 'error' in result:
             self.scan_result_text.insert(tk.END, self._tr("media_error", result['error']) + "\n")
@@ -1807,6 +1988,188 @@ class ColorCryptApp:
             self.scan_status_label.config(text=self._tr("status_found_headers", 0))
         else:
             self.scan_status_label.config(text=self._tr("status_ready"))
+
+    # ─── RS Steganalysis ───────────────────────────────────────────
+
+    def _rs_process(self):
+        if not hasattr(self, 'scan_file_path') or not self.scan_file_path:
+            messagebox.showwarning(self._tr("notice"), self._tr("err_scan_no_file"))
+            return
+
+        self.scan_result_text.delete(1.0, tk.END)
+        self.scan_result_text.insert(tk.END, self._tr("rs_working") + "\n")
+        self.scan_status_label.config(text=self._tr("status_scanning"))
+        self.scan_progress.start(10)
+
+        def task():
+            try:
+                result = self.core.analyze_rs_steganalysis(self.scan_file_path)
+                self.root.after(0, lambda: self._rs_callback(result))
+            except Exception as e:
+                self.root.after(0, lambda: self._rs_callback({'error': str(e)}))
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _rs_callback(self, result):
+        self.scan_progress.stop()
+        self.scan_result_text.delete(1.0, tk.END)
+        if 'error' in result:
+            self.scan_result_text.insert(tk.END, self._tr("media_error", result['error']) + "\n")
+            self.scan_status_label.config(text=self._tr("status_error"))
+            return
+
+        self.scan_result_text.insert(tk.END, self._tr("rs_result"))
+        for ch, data in result['channels'].items():
+            self.scan_result_text.insert(tk.END, self._tr("rs_channel",
+                ch, data['regular_ratio'], data['singular_ratio']))
+            self.scan_result_text.insert(tk.END, self._tr("rs_diff", data['diff']))
+            if data['suspicious']:
+                self.scan_result_text.insert(tk.END, self._tr("rs_suspicious") + "\n")
+            else:
+                self.scan_result_text.insert(tk.END, self._tr("rs_clean") + "\n")
+
+        verdict = self._tr("rs_detected") if result['embedding_detected'] else self._tr("rs_clean_verdict")
+        self.scan_result_text.insert(tk.END, self._tr("rs_verdict", verdict))
+        self.scan_status_label.config(text=self._tr("status_found_headers", 0) if result['embedding_detected'] else self._tr("status_ready"))
+
+    def _scan_save_result(self):
+        content = self.scan_result_text.get(1.0, tk.END).strip()
+        if not content:
+            messagebox.showinfo(self._tr("notice"), self._tr("empty_result"))
+            return
+        path = filedialog.asksaveasfilename(
+            title=self._tr("save_as"),
+            defaultextension=".txt",
+            filetypes=[("Text", "*.txt"), ("All", "*.*")]
+        )
+        if path:
+            try:
+                with open(path, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                self.scan_status_label.config(text=self._tr("saved_as", os.path.basename(path)))
+            except Exception as e:
+                messagebox.showerror(self._tr("error"), str(e))
+
+    # ─── Image Comparison Tab ──────────────────────────────────────
+
+    def _compare_select_original(self):
+        path = filedialog.askopenfilename(title=self._tr("img_compare_select_orig"),
+                                          filetypes=[("Image files", "*.png *.webp *.bmp *.tiff *.jpg *.jpeg")])
+        if path:
+            self.img_compare_orig_path = path
+            self.compare_orig_label.config(text=os.path.basename(path))
+
+    def _compare_select_encoded(self):
+        path = filedialog.askopenfilename(title=self._tr("img_compare_select_encoded"),
+                                          filetypes=[("Image files", "*.png *.webp *.bmp *.tiff *.jpg *.jpeg")])
+        if path:
+            self.img_compare_encoded_path = path
+            self.compare_encoded_label.config(text=os.path.basename(path))
+
+    def _compare_images(self):
+        if not self.img_compare_orig_path or not self.img_compare_encoded_path:
+            messagebox.showwarning(self._tr("notice"), self._tr("err_scan_no_file"))
+            return
+
+        self.compare_btn.config(state=tk.DISABLED)
+        self.compare_save_btn.config(state=tk.DISABLED)
+        self.compare_status_label.config(text=self._tr("computing"))
+        self.compare_result_text.delete(1.0, tk.END)
+        self.compare_result_text.insert(tk.END, self._tr("computing") + "...\n")
+        self._diff_image_tk = None
+        self._diff_pil_image = None
+
+        t = threading.Thread(target=self._compare_thread, daemon=True)
+        t.start()
+
+    def _compare_thread(self):
+        try:
+            from PIL import Image, ImageTk
+            import numpy as np
+            import math
+            from io import BytesIO
+
+            orig = Image.open(self.img_compare_orig_path).convert('RGB')
+            enc = Image.open(self.img_compare_encoded_path).convert('RGB')
+
+            if orig.size != enc.size:
+                enc = enc.resize(orig.size, Image.LANCZOS)
+
+            orig_arr = np.array(orig, dtype=np.int16)
+            enc_arr = np.array(enc, dtype=np.int16)
+            diff_arr = np.abs(orig_arr - enc_arr).astype(np.uint8)
+            diff_img = Image.fromarray(diff_arr, 'RGB')
+
+            diff_buf = BytesIO()
+            diff_img.save(diff_buf, format='PNG')
+            diff_size = len(diff_buf.getvalue())
+
+            max_diff = int(diff_arr.max())
+            avg_diff = float(diff_arr.mean())
+            total_pixels = diff_arr.shape[0] * diff_arr.shape[1]
+            changed_pixels = int(np.any(diff_arr > 0, axis=2).sum())
+            mse = float(np.mean((orig_arr - enc_arr) ** 2))
+            psnr = None
+            if mse > 0:
+                psnr = 20 * math.log10(255.0) - 10 * math.log10(mse)
+
+            result_text = self._tr("img_compare_diff") + "\n\n"
+            result_text += f"  Max diff: {max_diff}\n"
+            result_text += f"  Avg diff: {avg_diff:.2f}\n"
+            result_text += f"  Changed pixels: {changed_pixels} / {total_pixels} ({changed_pixels/total_pixels*100:.1f}%)\n"
+            result_text += f"  Diff image size: {diff_size} bytes\n"
+            result_text += f"\n  MSE: {mse:.2f}\n"
+            if psnr is not None:
+                result_text += f"  PSNR: {psnr:.2f} dB\n"
+
+            # Build preview thumbnail
+            pw, ph = diff_img.size
+            max_preview = 400
+            if pw > max_preview or ph > max_preview:
+                ratio = min(max_preview / pw, max_preview / ph)
+                preview = diff_img.resize((int(pw * ratio), int(ph * ratio)), Image.LANCZOS)
+            else:
+                preview = diff_img
+            preview_tk = ImageTk.PhotoImage(preview)
+
+            self.root.after(0, self._compare_done, result_text, preview_tk, diff_img)
+        except Exception as e:
+            self.root.after(0, self._compare_error, str(e))
+
+    def _compare_done(self, result_text, preview_tk, diff_pil):
+        self.compare_result_text.delete(1.0, tk.END)
+        self.compare_result_text.insert(tk.END, result_text)
+        self.compare_status_label.config(text=self._tr("img_compare_diff"))
+
+        self._diff_image_tk = preview_tk
+        self._diff_pil_image = diff_pil
+        self.diff_canvas.delete("all")
+        self.diff_canvas.config(width=preview_tk.width(), height=preview_tk.height())
+        self.diff_canvas.create_image(0, 0, anchor=tk.NW, image=preview_tk)
+
+        self.compare_btn.config(state=tk.NORMAL)
+        self.compare_save_btn.config(state=tk.NORMAL)
+
+    def _compare_error(self, error):
+        self.compare_result_text.delete(1.0, tk.END)
+        self.compare_result_text.insert(tk.END, f"Error: {error}\n")
+        self.compare_status_label.config(text=self._tr("error"))
+        self.compare_btn.config(state=tk.NORMAL)
+
+    def _compare_save_diff(self):
+        if self._diff_pil_image is None:
+            return
+        path = filedialog.asksaveasfilename(
+            title=self._tr("save_as"),
+            defaultextension=".png",
+            filetypes=[("PNG", "*.png"), ("WebP", "*.webp"), ("BMP", "*.bmp"), ("JPEG", "*.jpg *.jpeg")]
+        )
+        if path:
+            try:
+                self._diff_pil_image.save(path)
+                self.compare_status_label.config(text=self._tr("saved_as", os.path.basename(path)))
+            except Exception as e:
+                messagebox.showerror(self._tr("error"), str(e))
 
 
 def main():

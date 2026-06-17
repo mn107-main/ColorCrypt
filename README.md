@@ -10,17 +10,25 @@
 *   **Кодирование файлов в изображения** — встраивание данных в пиксельные каналы (монохромный, RGB, RGBA).
 *   **LSB-стеганография** — настраиваемое LSB-встраивание (1–4 бита) для минимизации визуальных искажений, **а также K-LSB** (разная глубина на канал: R, G, B, A) с адаптивным авто-режимом.
 *   **LSB-энтропия (стеганоанализ)** — χ²-тест на равномерность распределения LSB-битов для выявления подозрительных изображений (потенциальная стеганография).
+*   **RS-стеганоанализ (Regular/Singular)** — более точный метод обнаружения LSB-стеганографии на основе анализа регулярных и сингулярных групп.
 *   **Восстановление файлов из изображений** — с проверкой целостности через SHA-256.
 *   **Шифрование** — AES-256-SIV (стойкость к повтору nonce) с Argon2id (GPU-устойчивый KDF, 64 MB памяти).
 *   **Сжатие** — zlib с настраиваемыми уровнями (none/min/normal/max).
 *   **Поддержка больших файлов** — автоматическая сегментация (10/50/100/250 МБ на изображение) с возможностью упаковки в ZIP.
 *   **Форматы вывода** — PNG, WebP, BMP, TIFF (lossless), JPEG (lossy), ZIP (упаковка результатов).
 *   **Изображение в изображении (III)** — сокрытие одного изображения внутри другого с использованием альфа-канала (или RGB LSB) и сохранением оригинального альфа-канала.
-*   **ECC (коррекция ошибок)** — XOR-паритетная коррекция ошибок для повышения устойчивости к сжатию JPEG и шумам канала.
+*   **ECC (коррекция ошибок)** — XOR-паритетная коррекция ошибок с настраиваемым уровнем (5%/10%/25%) для повышения устойчивости к сжатию JPEG и шумам канала.
 *   **Авто-детекция параметров** — автоматическое определение LSB/K-LSB параметров при декодировании.
 *   **Шумовая адаптация K-LSB** — анализ дисперсии каналов для оптимального распределения битов глубины.
-*   **Медиа-стеганография** — встраивание данных в файлы GIF, MP4, MP3, WAV, FLAC или видео через FFmpeg (опционально: imageio, ffmpeg, pydub).
+*   **Медиа-стеганография** — встраивание данных в файлы GIF, MP4, MP3, WAV, FLAC, AAC, OGG или видео через FFmpeg (опционально: imageio, ffmpeg, pydub).
+*   **Настраиваемый уровень ECC** — выбор уровня коррекции ошибок: 5%, 10% или 25% избыточности.
+*   **Улучшенное сканирование** — детектор показывает не только наличие данных, но и предполагаемый метод (LSB/K-LSB/III) и размер данных.
 *   **Автоматическое сканирование заголовков** — обнаружение скрытых данных перебором LSB-слоёв, каналов и сырых байтов.
+*   **Психовизиальная модель K-LSB** — распределение битов по каналам на основе HSV-цветового пространства (глаз менее чувствителен к изменениям в синем/жёлтом каналах).
+*   **Адаптивная LSB-глубина по области** — автоматический выбор глубины LSB для каждой области изображения на основе локальной дисперсии (3 бита в текстурах, 1 на гладких участках).
+*   **Сравнение изображений** — в GUI добавлена вкладка для сравнения оригинала и изображения со встроенными данными (MSE/PSNR, визуализация разницы, предпросмотр diff-изображения).
+*   **Поддержка ключей в hex** — возможность использовать готовый ключ (в hex-формате) вместо пароля.
+*   **Потоковый режим** — обработка файлов произвольного размера без полной загрузки в память.
 *   **Производительность** — векторизованные операции с пикселями (numpy), ленивое декодирование, кэширование данных.
 *   **CLI + GUI** — интерфейс командной строки и графический интерфейс на Tkinter.
 
@@ -127,6 +135,19 @@ python core.py scan image.png --scan-alpha --scan-rgb --scan-layers 2
 | `--scan-layers` | Максимальное количество LSB-слоёв для сканирования (по умолчанию: `4`) |
 | `--scan-alpha` | Включить альфа-канал в сканирование (по умолчанию: вкл) |
 | `--scan-rgb` | Включить RGB-каналы в сканирование (по умолчанию: вкл) |
+| `--ecc` | Включить коррекцию ошибок (ECC) для JPEG |
+| `--ecc-level` | Уровень ECC: `0` (выкл), `1` (5%), `2` (10%), `3` (25%) |
+| `--key` | Ключ шифрования в hex (альтернатива `--password`) |
+| `--psychovisual` | Психовизиальная модель K-LSB (HSV) |
+| `--adaptive-lsb` | Адаптивный K-LSB (автовыбор глубины по области) |
+| `--stream` | Потоковый режим (без полной загрузки в память) |
+
+### Новое в v2.4.0
+
+- **Визуализация разницы в Сравнении изображений** — diff-изображение отображается как превью (Canvas), кнопка «Сохранить как» для экспорта
+- **Прогресс-бар в Сканере** — индикатор выполнения для операций сканирования, энтропии и RS-анализа
+- **Кнопка «Сохранить как» в Сканере** — экспорт результатов в текстовый файл
+- **Drag-and-drop** для полей Original/Encoded на вкладке сравнения
 
 ## GUI
 
@@ -139,12 +160,13 @@ python core.py
 GUI предоставляет вкладки для:
 
 *   **Главная** — Кодирование/декодирование файлов, прогресс-бар, предпросмотр
-*   **Настройки** — Режим каналов, глубина LSB / K-LSB, сжатие, формат вывода, сегментация, ZIP-упаковка
-*   **Безопасность** — AES-256-SIV шифрование (стойкость к повтору nonce) + Argon2id, индикатор сложности пароля
+*   **Настройки** — Режим каналов, глубина LSB / K-LSB, сжатие, формат вывода, сегментация, ZIP-упаковка, уровень ECC, психовизиальная модель
+*   **Безопасность** — AES-256-SIV шифрование (стойкость к повтору nonce) + Argon2id, индикатор сложности пароля, поддержка ключей в hex
 *   **Пакетная обработка** — Пакетное кодирование/декодирование нескольких файлов
 *   **Картинка в картинке** — III-стеганография (сокрытие/извлечение с сохранением альфа-канала)
-*   **Медиа (GIF/MP4/MP3/Video)** — Медиа-стеганография для видео и аудио
-*   **Детектор** — Сканирование изображений на наличие скрытых заголовков ColorCrypt (все LSB-слои и каналы), а также χ²-анализ LSB-энтропии для выявления стеганографии
+*   **Медиа (GIF/MP4/MP3/WAV/FLAC/AAC/OGG/Video)** — Медиа-стеганография для видео и аудио
+*   **Детектор** — Сканирование изображений на наличие скрытых заголовков ColorCrypt (все LSB-слои и каналы), χ²-анализ LSB-энтропии и RS-стеганоанализ для выявления стеганографии
+*   **Сравнение изображений** — Визуализация разницы (MSE/PSNR) между оригиналом и изображением со встроенными данными
 *   **Отладка** — Просмотр логов отладки
 
 ## Как это работает
@@ -172,14 +194,24 @@ GUI предоставляет вкладки для:
 - **Encode files to images** — embeds file data into pixel channels (mono, RGB, RGBA)
 - **LSB steganography** — configurable 1–4 bit LSB embedding for low‑noise data hiding, plus **K-LSB** (per-channel depth: R, G, B, A) with adaptive auto‑mode
 - **LSB entropy (steganalysis)** — χ² test on LSB bit distribution to flag images with suspiciously uniform LSBs (potential steganography)
+- **RS steganalysis (Regular/Singular)** — advanced method for detecting LSB steganography via regular/singular group analysis
 - **Decode images back to original files** — with SHA‑256 integrity check
 - **Encryption** — AES‑256‑SIV (nonce misuse resistant) with Argon2id (GPU‑resistant KDF, 64 MB memory)
 - **Compression** — zlib with configurable levels (none/min/normal/max)
 - **Large file support** — automatic chunking (10/50/100/250 MB per image) with optional ZIP packing
 - **Output formats** — PNG, WebP, BMP, TIFF (lossless), JPEG (lossy), ZIP (archive bundling)
 - **Image‑in‑Image** — hide one image inside another using alpha channel (or RGB LSB), with original alpha preservation
-- **Media steganography** — embed data into GIF, MP4, MP3, or Video via FFmpeg (optional: imageio, ffmpeg, pydub)
+- **Media steganography** — embed data into GIF, MP4, MP3, WAV, FLAC, AAC, OGG, or Video via FFmpeg (optional: imageio, ffmpeg, pydub)
 - **Header scanning** — auto‑detect hidden data by scanning LSB layers, channels, and raw bytes
+- **Enhanced scan output** — shows detected method (LSB/K-LSB/III) and estimated data size
+- **RS steganalysis (Regular/Singular)** — advanced LSB detection via regular/singular group analysis
+- **Psychovisual K-LSB model** — perceputally-tuned bit distribution using HSV color space
+- **Adaptive per-region LSB depth** — selects LSB depth per region based on local variance
+- **Image comparison in GUI** — side-by-side diff, MSE/PSNR metrics, visual diff preview thumbnail, Save Diff button
+- **Hex key support** — use raw hex key instead of password for encryption
+- **Streaming mode** — process arbitrarily large files without full memory load
+- **Configurable ECC level** — choose 5%, 10%, or 25% XOR parity redundancy
+- **ECC (error correction)** — XOR parity error correction with configurable level for JPEG resilience
 - **Performance** — numpy‑vectorized pixel operations, lazy decoding, data caching
 - **CLI + GUI** — command‑line interface and Tkinter GUI
 
@@ -298,6 +330,19 @@ python core.py scan image.png --scan-alpha --scan-rgb --scan-layers 2
 | `--scan-layers` | Max LSB layers to scan (default: `4`) |
 | `--scan-alpha` | Include alpha channel in scan (default: on) |
 | `--scan-rgb` | Include RGB channels in scan (default: on) |
+| `--ecc` | Enable error correction (ECC) for JPEG |
+| `--ecc-level` | ECC level: `0` (off), `1` (5%), `2` (10%), `3` (25%) |
+| `--key` | Encryption key in hex (alternative to `--password`) |
+| `--psychovisual` | Psychovisual K-LSB model (HSV) |
+| `--adaptive-lsb` | Adaptive K-LSB (auto depth per region) |
+| `--stream` | Streaming mode (no full memory load) |
+
+### New in v2.4.0
+
+- **Diff preview in Image Comparison** — diff image shown as thumbnail (Canvas), "Save as" button to export
+- **Progress bar in Scanner** — indeterminate indicator for scan, entropy, and RS operations
+- **"Save as" in Scanner** — export results to a text file
+- **Drag-and-drop** for Original/Encoded fields on the Compare tab
 
 ## GUI
 
@@ -310,12 +355,13 @@ python core.py
 The GUI provides tabs for:
 
 - **Home** — Encode/Decode files, progress bar, preview
-- **Settings** — Channel mode, LSB / K-LSB bit depth, compression, output format, chunking, ZIP packing
-- **Security** — AES‑256‑SIV (nonce misuse resistant) + Argon2id, password strength meter
+- **Settings** — Channel mode, LSB / K-LSB bit depth, compression, output format, chunking, ZIP packing, ECC level, psychovisual model
+- **Security** — AES‑256‑SIV (nonce misuse resistant) + Argon2id, password strength meter, hex key support
 - **Batch** — Batch encode/decode multiple files
 - **Image‑in‑Image** — III steganography (hide/reveal with alpha preservation)
-- **Media (GIF/MP4/MP3/Video)** — Media steganography for video and audio
-- **Detector** — Scan images for hidden ColorCrypt headers (all LSB layers & channels), plus χ² LSB entropy analysis to detect steganography
+- **Media (GIF/MP4/MP3/WAV/FLAC/AAC/OGG/Video)** — Media steganography for video and audio
+- **Detector** — Scan images for hidden ColorCrypt headers (all LSB layers & channels), χ² LSB entropy analysis, and RS steganalysis to detect steganography
+- **Image Comparison** — Visualize difference (MSE/PSNR) between original and encoded images
 - **Debug** — Debug log viewer
 
 ## How it works

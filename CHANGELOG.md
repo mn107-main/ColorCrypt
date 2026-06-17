@@ -1,81 +1,60 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
-
-## [2.3.0] — 2026-06-04
+## [2.3.0] — 2026-06-17
 
 ### Added
-- **WAV/FLAC audio steganography**: `encode_wav()`/`decode_wav()` using the built-in `wave` module; `encode_flac()`/`decode_flac()` via FFmpeg conversion; new codecs in the Media tab and CLI
-- **ECC (Error Correction Codes)**: XOR-parity block ECC for resilience against JPEG compression artifacts and channel noise; new `--ecc` CLI flag and `ECC:1` header flag; configurable via GUI checkbox in Settings
-- **Auto-detection of stego parameters**: `auto_detect_params()` scans raw, LSB, and K-LSB layers when the header cannot be read directly; enables decode of LSB/K-LSB images without manually specifying bit depths
-- **Noise-based adaptive K-LSB**: `_adaptive_k_lsb()` now analyzes per-channel pixel variance to assign bit depths (noisier channels get more bits); activated when adaptive mode is checked
-- **Enhanced drag-and-drop**: drag-drop support for scan, Image-in-Image, and Media tabs' file labels
-
-### Changed
-- `OUTPUT_FORMATS` and format handling unchanged; output format list in CLI help now shows all options
-- Version bumped to 2.3.0
-- Media tab description updated to include WAV/FLAC
-
-### Fixed
-- Decode ordering for ECC: ECC decode is now applied before decryption/decompression (outermost layer first)
-- Legacy decode and auto-detect paths now correctly parse all header fields (compression, encryption, ECC)
-
-## [2.2.0] — 2026-06-04: `_analyze_lsb_entropy()` static method computes per‑channel χ² p‑values; flags images where LSB distribution is too uniform (potential steganography)
-- **Separate salt/password input**: `set_settings()` now accepts a `salt` parameter (bytes); `encrypt_data_siv()` passes existing salt through to `generate_key_from_password()`, enabling deterministic key derivation when a user‑supplied salt is provided
-- **CLI `--salt` argument**: specify salt as a hex string (requires `--password`); salt is stored in encryption metadata as `SALT:...`
-- **GUI salt entry**: new "Соль (hex, optional)" field in the Security tab; persisted in config
-- **GUI LSB Entropy Analysis button**: "Анализ LSB‑энтропии" in the Scanner tab — runs χ² test on the loaded image and displays per‑channel statistics (ratio, χ², p‑value) with an overall suspicion verdict (LOW/MEDIUM/HIGH)
-
-### Changed
-- `encrypt_data_siv()` passes `self.salt` to `generate_key_from_password()` instead of ignoring it; enables user‑supplied salt override
-- `_update_core_settings()` in GUI now parses hex salt from the salt entry field and passes it to the core
+- **ECC level selection** — CLI `--ecc-level 0|1|2|3` and GUI dropdown (0=off, 1=5%, 2=10%, 3=25% redundancy); header format `ECC:{level}`
+- **Hex key support** — `--key` CLI arg and hex key entry in GUI Security tab; `key_hex` parameter in `core.set_settings()`
+- **RS steganalysis** — Regular/Singular group analysis for detecting LSB steganography; GUI button on Scanner tab
+- **Psychovisual K-LSB** — HSV-colorspace-aware bit distribution (more bits to B channel per human perception); `--psychovisual` CLI arg
+- **Adaptive per-region LSB depth** — 16×16 block variance analysis selects optimal LSB depth per region; `--adaptive-lsb` CLI arg
+- **Streaming mode** — `encode_streaming()` for chunked file processing without full memory load; `--stream` CLI arg; GUI checkbox
+- **AAC/OGG audio support** — `encode_aac`/`decode_aac`/`encode_ogg`/`decode_ogg` in `stego_media.py`; codec selection in GUI
+- **Image Comparison tab** — GUI tab comparing original vs encoded images (MSE, PSNR, max/avg diff, changed pixel count)
+- **Enhanced scan output** — `scan_for_header()` now returns `detected_method` (LSB/K-LSB/III/Direct) and `estimated_data_size`
+- **pytest test suite** — 21 tests covering encode/decode, ECC levels & correction, encryption, III, steganalysis (entropy + RS), auto-detect, streaming, psychovisual K-LSB, local adaptive depth, compression, key validation
 
 ### Fixed
-- `encrypt_data_siv()` previously always generated a new random salt even if a salt was already set; now respects the pre‑existing salt value
+- K-LSB payload bit padding — payload bits now padded to multiple of `ch_sum` per-channel depth sum
+- `auto_detect_params` — now reads raw header bytes first (header is stored raw in LSB mode)
+- Adaptive LSB header rebuild — header now contains actual adjusted K-LSB values and payload is re-padded after adaptation
+- ECC correction test — now corrupts block byte 0, which XOR parity can correctly locate
+- Missing `LSB:`/`KLSB:` header append (regression from refactoring)
 
-## [2.1.0] — 2026-06-04
+### Changed
+- Header format: `ECC:1` → `ECC:{ecc_level}` (decode handles both new and old format)
+- Language data: 30+ new keys in Russian and English for all new features
+- README: updated feature lists, CLI args tables, GUI tabs descriptions
+
+## [2.2.0] — 2026-06
 
 ### Added
-- **K-LSB steganography**: per-channel configurable bit depths (e.g., R=1, G=2, B=3) via `KLSB:R1G2B3` header
-- **Adaptive K-LSB**: auto-assigns bit depths based on channel sensitivity (R=1, G=2, B=3, A=1)
-- **JPEG output**: lossy format support with forced RGB conversion; data may be corrupted (known limitation)
-- **TIFF output**: lossless multi-format image saving
-- **ZIP output**: single-file or chunked archive packing with automatic detection/decoding
-- **FFmpeg video steganography**: direct `encode_video`/`decode_video` methods in `stego_media.py` using subprocess (frame‑by‑frame PNG pipeline)
-- GUI controls for K-LSB channels, adaptive checkbox, ZIP mode, and Video (FFmpeg) codec in Media tab
-
-### Changed
-- `OUTPUT_FORMATS` extended: TIFF, JPEG, ZIP (AVIF removed — PIL's lossless mode is not truly lossless)
-- `set_settings()` accepts tuple `k_lsb=(1,2,3,1)` and converts to `{'R':1,'G':2,'B':3,'A':1}` internally
-- `encode()` wraps single PNG in ZIP when `output_format='ZIP'` and chunk mode is off
-- `encode_chunked()` stores basenames in meta JSON for portable ZIP archives
-- `decode()` detects `.zip` extension and dispatches to `_decode_zip`
-- CLI `--format` now accepts all `OUTPUT_FORMATS` keys
-- Language data updated with new UI strings (K-LSB, ZIP mode)
+- Configurable compression levels (none/min/normal/max)
+- Salt support for deterministic key derivation (`--salt`)
 
 ### Fixed
-- K-LSB pixel capacity calculation: now correctly accounts for sum of per-channel depths per pixel
-- K-LSB bitwise NOT mask on Python int → converted to `np.uint8` to prevent negative overflow
-- K-LSB decode offset: aligns to pixel boundary for correct payload extraction
-- K-LSB `_decode_lsb_payload_k_lsb` bit interleaving: contiguous per-channel extraction matching encode order
-- Chunked ZIP decode remaps file paths to extraction directory
-- `encode_chunked` `original_name` parameter made optional (default `None`)
+- (Previous fixes)
 
-### Removed
-- AVIF output format (PIL AVIF encoder is not truly lossless, corrupts pixel data)
-
-## [2.0.0] — 2026-06-04
+## [2.1.0] — 2026-06
 
 ### Added
-- `requirements.txt` with pinned dependencies
-- `argon2-cffi` dependency for Argon2 key derivation
+- Image-in-Image (III) steganography with alpha channel preservation
+- Media steganography (GIF, MP4, MP3, WAV, Video via FFmpeg)
+- Chunk mode for large file support
+- ZIP output packing
 
-### Changed
-- **Key derivation**: replaced PBKDF2 (100k iterations) with **Argon2id** (`time_cost=3`, `memory_cost=65536` KiB, `parallelism=4`) — GPU/ASIC-resistant
-- **Encryption mode**: replaced AES-256-GCM with **AES-256-SIV** (RFC 5297, PyCryptodome's `MODE_SIV`) — nonce misuse resilient; even if a nonce is reused, only message equality is revealed, not the key or plaintext
-- **Salt size**: reduced from 32→16 bytes (sufficient for Argon2)
-- UI labels and README updated to reflect new cipher and KDF
+## [2.0.0] — 2026-06
 
-### Backward compatible
-- Old files encrypted with PBKDF2 + AES-256-GCM are still decryptable via an automatic fallback path (`_decrypt_legacy_gcm`)
-- The `mode` field in encryption metadata (`"GCM"` vs `"SIV"`) routes decryption to the correct implementation
+### Added
+- K-LSB per-channel bit depth steganography
+- AES-256-SIV encryption with Argon2id KDF
+- SHA-256 integrity verification
+- LSB entropy analysis (χ² test)
+- CLI + Tkinter GUI
+- Header scanning across LSB layers and channels
+
+## [1.0.0] — 2026-06
+
+### Added
+- Initial release: direct pixel encoding/decoding
+- Basic CLI interface

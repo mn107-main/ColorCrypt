@@ -49,6 +49,8 @@ if HAS_FFMPEG:
 if HAS_PYDUB:
     if 'MP3' not in AVAILABLE_CODECS:
         AVAILABLE_CODECS.append('MP3')
+    AVAILABLE_CODECS.append('AAC')
+    AVAILABLE_CODECS.append('OGG')
 if HAS_WAVE:
     AVAILABLE_CODECS.append('WAV')
     AVAILABLE_CODECS.append('FLAC')
@@ -396,6 +398,140 @@ class MediaSteganography:
             subprocess.run(['ffmpeg', '-i', tmp_wav, '-compression_level', '8',
                            output_path, '-y'], capture_output=True, check=True)
             return {'success': True, 'output_path': output_path, 'size': result.get('size', 0)}
+        except subprocess.CalledProcessError as e:
+            return {'success': False, 'error': f"FFmpeg ошибка: {e.stderr.decode() if e.stderr else str(e)}"}
+        finally:
+            os.unlink(tmp_wav)
+
+    def encode_aac(self, input_aac_path, data, output_path):
+        if not HAS_FFMPEG:
+            raise ImportError("Установите ffmpeg для конвертации AAC")
+        if not HAS_PYDUB:
+            raise ImportError("Установите pydub: pip install pydub")
+
+        from pydub import AudioSegment
+        import tempfile
+        import subprocess
+
+        tmp_wav = tempfile.NamedTemporaryFile(suffix='.wav', delete=False).name
+        try:
+            audio = AudioSegment.from_file(input_aac_path, format='aac')
+            audio.export(tmp_wav, format='wav')
+
+            import wave
+            with wave.open(tmp_wav, 'rb') as wf:
+                params = wf.getparams()
+                frames = bytearray(wf.readframes(wf.getnframes()))
+
+            data_bytes = data if isinstance(data, bytes) else data.encode('utf-8')
+            header = struct.pack('>I', len(data_bytes))
+            payload = header + data_bytes
+            bits = []
+            for byte in payload:
+                for b in range(8):
+                    bits.append((byte >> b) & 1)
+
+            max_bits = len(frames)
+            if len(bits) > max_bits:
+                raise ValueError(f"Данные слишком велики: нужно {len(bits)} бит, доступно {max_bits}")
+
+            for i in range(len(bits)):
+                frames[i] = (frames[i] & 0xFE) | bits[i]
+
+            with wave.open(tmp_wav, 'wb') as wf:
+                wf.setparams(params)
+                wf.writeframes(bytes(frames))
+
+            subprocess.run(['ffmpeg', '-i', tmp_wav, '-c:a', 'aac',
+                           '-b:a', '192k', output_path, '-y'],
+                          capture_output=True, check=True)
+            return {'success': True, 'output_path': output_path, 'size': len(data_bytes)}
+        except subprocess.CalledProcessError as e:
+            return {'success': False, 'error': f"FFmpeg ошибка: {e.stderr.decode() if e.stderr else str(e)}"}
+        finally:
+            os.unlink(tmp_wav)
+
+    def decode_aac(self, input_aac_path, output_path):
+        if not HAS_FFMPEG:
+            raise ImportError("Установите ffmpeg для конвертации AAC")
+        if not HAS_PYDUB:
+            raise ImportError("Установите pydub: pip install pydub")
+
+        import tempfile
+        import subprocess
+
+        tmp_wav = tempfile.NamedTemporaryFile(suffix='.wav', delete=False).name
+        try:
+            subprocess.run(['ffmpeg', '-i', input_aac_path, tmp_wav, '-y'],
+                          capture_output=True, check=True)
+            return self.decode_wav(tmp_wav, output_path)
+        except subprocess.CalledProcessError as e:
+            return {'success': False, 'error': f"FFmpeg ошибка: {e.stderr.decode() if e.stderr else str(e)}"}
+        finally:
+            os.unlink(tmp_wav)
+
+    def encode_ogg(self, input_ogg_path, data, output_path):
+        if not HAS_FFMPEG:
+            raise ImportError("Установите ffmpeg для конвертации OGG")
+        if not HAS_PYDUB:
+            raise ImportError("Установите pydub: pip install pydub")
+
+        import tempfile
+        import subprocess
+
+        tmp_wav = tempfile.NamedTemporaryFile(suffix='.wav', delete=False).name
+        try:
+            from pydub import AudioSegment
+            audio = AudioSegment.from_file(input_ogg_path, format='ogg')
+            audio.export(tmp_wav, format='wav')
+
+            import wave
+            with wave.open(tmp_wav, 'rb') as wf:
+                params = wf.getparams()
+                frames = bytearray(wf.readframes(wf.getnframes()))
+
+            data_bytes = data if isinstance(data, bytes) else data.encode('utf-8')
+            header = struct.pack('>I', len(data_bytes))
+            payload = header + data_bytes
+            bits = []
+            for byte in payload:
+                for b in range(8):
+                    bits.append((byte >> b) & 1)
+
+            max_bits = len(frames)
+            if len(bits) > max_bits:
+                raise ValueError(f"Данные слишком велики: нужно {len(bits)} бит, доступно {max_bits}")
+
+            for i in range(len(bits)):
+                frames[i] = (frames[i] & 0xFE) | bits[i]
+
+            with wave.open(tmp_wav, 'wb') as wf:
+                wf.setparams(params)
+                wf.writeframes(bytes(frames))
+
+            subprocess.run(['ffmpeg', '-i', tmp_wav, '-c:a', 'libvorbis',
+                           '-q:a', '5', output_path, '-y'],
+                          capture_output=True, check=True)
+            return {'success': True, 'output_path': output_path, 'size': len(data_bytes)}
+        except subprocess.CalledProcessError as e:
+            return {'success': False, 'error': f"FFmpeg ошибка: {e.stderr.decode() if e.stderr else str(e)}"}
+        finally:
+            os.unlink(tmp_wav)
+
+    def decode_ogg(self, input_ogg_path, output_path):
+        if not HAS_FFMPEG:
+            raise ImportError("Установите ffmpeg для конвертации OGG")
+        if not HAS_PYDUB:
+            raise ImportError("Установите pydub: pip install pydub")
+
+        import tempfile
+        import subprocess
+
+        tmp_wav = tempfile.NamedTemporaryFile(suffix='.wav', delete=False).name
+        try:
+            subprocess.run(['ffmpeg', '-i', input_ogg_path, tmp_wav, '-y'],
+                          capture_output=True, check=True)
+            return self.decode_wav(tmp_wav, output_path)
         except subprocess.CalledProcessError as e:
             return {'success': False, 'error': f"FFmpeg ошибка: {e.stderr.decode() if e.stderr else str(e)}"}
         finally:
