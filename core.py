@@ -8,6 +8,7 @@ import sys
 import argparse
 import zipfile
 import io
+import struct
 from pathlib import Path
 from array import array
 from threading import Event
@@ -17,6 +18,7 @@ from Crypto.Cipher import AES
 from Crypto.Random import get_random_bytes
 from argon2.low_level import hash_secret_raw, Type
 from PIL import Image
+from stego_jpeg import JPEGDCTSteganography
 
 CURRENT_VERSION = "2.4.0"
 
@@ -91,6 +93,8 @@ class ColorCryptCore:
         self.ecc_enabled = False
         self.ecc_level = 0
         self.psychovisual_mode = False
+        self.jpeg_dct_mode = False
+        self.jpeg_dct_f5 = True
 
     def _log_debug(self, message):
         if self.debug_callback:
@@ -107,7 +111,8 @@ class ColorCryptCore:
                      encode_mode="base64", chunk_mode=False, chunk_size="50MB",
                       preserve_filename=True, lsb_bits=0, k_lsb=None,
                      adaptive_lsb=False, zip_mode=False, salt=None,
-                     ecc_enabled=False, ecc_level=0, psychovisual_mode=False,
+                      ecc_enabled=False, ecc_level=0, psychovisual_mode=False,
+                     jpeg_dct_mode=False, jpeg_dct_f5=True,
                      key_hex=None):
         self.compress_enabled = compress_enabled
         self.compress_level = compress_level
@@ -135,6 +140,8 @@ class ColorCryptCore:
         self.ecc_enabled = ecc_enabled
         self.ecc_level = ecc_level
         self.psychovisual_mode = psychovisual_mode
+        self.jpeg_dct_mode = jpeg_dct_mode
+        self.jpeg_dct_f5 = jpeg_dct_f5
         if key_hex:
             try:
                 self.key = bytes.fromhex(key_hex)
@@ -1279,6 +1286,151 @@ class ColorCryptCore:
             result['size'] = os.path.getsize(zip_path)
         return result
 
+    def encode_jpeg_dct(self, input_file_path, output_dir=None, output_name=None, carrier_image=None):
+        self.cancel_event.clear()
+        with open(input_file_path, 'rb') as f:
+            data = f.read()
+        if output_name is None:
+            basename = os.path.splitext(os.path.basename(input_file_path))[0]
+            output_name = basename
+        if output_dir is None:
+            output_dir = self.output_dir or os.path.dirname(input_file_path)
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = os.path.join(output_dir, f"{output_name}_dct.jpg")
+        jpeg_stego = JPEGDCTSteganography(
+            debug_callback=self.debug_callback,
+            progress_callback=self.progress_callback
+        )
+        if carrier_image and os.path.exists(carrier_image):
+            img_path = carrier_image
+            cleanup = False
+        else:
+            data_bytes = data if isinstance(data, bytes) else data.encode('utf-8')
+            header = JPEGDCTSteganography.JPEG_DCT_MAGIC + struct.pack('>I', len(data_bytes))
+            total_bits = (len(header) + len(data_bytes)) * 8
+            pixels_needed = total_bits
+            img_size = max(128, int((pixels_needed ** 0.5) + 0.5))
+            img_size = ((img_size + 7) // 8) * 8
+            img = Image.new('RGB', (img_size, img_size), color='white')
+            img_path = os.path.join(output_dir, f"__temp_{output_name}.jpg")
+            img.save(img_path, format='JPEG', quality=85)
+            cleanup = True
+        try:
+            result = jpeg_stego.encode_dct(img_path, data, output_path, use_f5=self.jpeg_dct_f5)
+            if result['success']:
+                result['encoded_data'] = True
+            return result
+        finally:
+            if cleanup and os.path.exists(img_path):
+                os.remove(img_path)
+
+    def decode_jpeg_dct(self, input_file_path, output_dir=None):
+        self.cancel_event.clear()
+        if output_dir is None:
+            output_dir = self.output_dir or os.path.dirname(input_file_path)
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = os.path.join(output_dir, f"decoded_dct_{int(time.time())}")
+        jpeg_stego = JPEGDCTSteganography(
+            debug_callback=self.debug_callback,
+            progress_callback=self.progress_callback
+        )
+        return jpeg_stego.decode_dct(input_file_path, output_path)
+
+    def auto_attack(self, image_path, output_dir=None):
+        self.cancel_event.clear()
+        results = {}
+        if output_dir is None:
+            output_dir = self.output_dir or os.path.dirname(image_path)
+        os.makedirs(output_dir, exist_ok=True)
+
+        try:
+            img = Image.open(image_path)
+        except:
+            return {'success': False, 'error': 'Не удалось открыть изображение'}
+
+        for lsb_depth in range(1, 5):
+            if self.cancel_event.is_set():
+                break
+            self._log_debug(f"Атака: LSB-{lsb_depth}...\n")
+            detected = self.auto_detect_params(img)
+            if detected:
+                try:
+                    arr = np.array(img, dtype=np.uint8)
+                    flat = arr.reshape(-1)
+                    hdr_text = detected.get('header', '')
+                    k_lsb = detected.get('k_lsb')
+                    lsb_bits = detected.get('lsb_bits', lsb_depth)
+                    header_byte_count = 4 + len(hdr_text.encode('ascii'))
+                    if k_lsb:
+                        channels_n = self._channel_names(
+                            MODE_RGB if img.mode in ('RGB', 'RGBA') else MODE_MONO
+                        )
+                        payload = self._decode_lsb_payload_k_lsb(flat, 0, k_lsb, channels_n)
+                    else:
+                        payload = self._decode_lsb_payload(flat, header_byte_count, lsb_bits)
+                    parts = hdr_text.split('|')
+                    expected_len = None
+                    ecc_enabled = False
+                    compressed = False
+                    enc_meta = None
+                    for part in parts:
+                        if part.startswith('LEN:'):
+                            expected_len = int(part[4:])
+                        elif part.startswith('ECC:'):
+                            ecc_enabled = True
+                        elif part == 'C':
+                            compressed = True
+                        elif part.startswith('ENC:'):
+                            enc_meta = part[4:]
+                    if expected_len and expected_len < len(payload):
+                        payload = payload[:expected_len]
+                    data = payload
+                    if ecc_enabled:
+                        try:
+                            data = self.ecc_decode(data)
+                        except:
+                            pass
+                    if not enc_meta:
+                        if compressed:
+                            try:
+                                data = self.decompress_data(data)
+                            except:
+                                pass
+                        try:
+                            final = base64.b64decode(data)
+                            out = os.path.join(output_dir, f"attacked_lsb{lsb_depth}_{int(time.time())}")
+                            with open(out, 'wb') as f:
+                                f.write(final)
+                            results[f'LSB-{lsb_depth}'] = {
+                                'success': True,
+                                'output_path': out,
+                                'size': len(final),
+                                'method': 'LSB'
+                            }
+                            self._log_debug(f"LSB-{lsb_depth}: данные извлечены!\n")
+                            continue
+                        except:
+                            pass
+                except:
+                    pass
+
+            if self.cancel_event.is_set():
+                break
+
+        if not results:
+            jpeg_stego = JPEGDCTSteganography(
+                debug_callback=self.debug_callback,
+                progress_callback=self.progress_callback
+            )
+            out = os.path.join(output_dir, f"attacked_dct_{int(time.time())}")
+            dct_result = jpeg_stego.decode_dct(image_path, out)
+            if dct_result['success']:
+                results['DCT'] = dct_result
+
+        if not results:
+            return {'success': False, 'error': 'Авто-атака: данные не найдены'}
+        return {'success': True, 'results': results, 'num_results': len(results)}
+
     def clear_sensitive_data(self):
         self.password = None
         self.key = None
@@ -1865,7 +2017,11 @@ def _safe_print(msg):
 def main_cli():
     import argparse
     parser = argparse.ArgumentParser(description='ColorCrypt')
-    parser.add_argument('mode', choices=['encode', 'decode', 'iii-encode', 'iii-decode', 'scan'])
+    parser.add_argument('mode', choices=[
+        'encode', 'decode', 'iii-encode', 'iii-decode', 'scan',
+        'jpeg-dct-encode', 'jpeg-dct-decode', 'attack',
+        'cloud-upload', 'cloud-download'
+    ])
     parser.add_argument('input')
     parser.add_argument('input2', nargs='?', help='Второй входной файл (для iii-encode: секретное изображение)')
     parser.add_argument('-o', '--output')
@@ -1900,6 +2056,25 @@ def main_cli():
                         help='Адаптивный K-LSB (автовыбор глубины по области изображения)')
     parser.add_argument('--psychovisual', action='store_true', default=False,
                         help='Использовать психовизиальную модель для K-LSB (HSV)')
+    parser.add_argument('--jpeg-dct', action='store_true', default=False,
+                        help='Использовать JPEG DCT стеганографию')
+    parser.add_argument('--jpeg-dct-f5', action='store_true', default=True,
+                        help='Использовать F5-подобное внедрение (JSteg vs F5)')
+    parser.add_argument('--no-jpeg-dct-f5', action='store_false', dest='jpeg_dct_f5',
+                        help='Использовать JSteg вместо F5')
+
+    parser.add_argument('--cloud-provider', choices=['S3', 'FTP', 'Google Drive'], default='S3',
+                        help='Облачный провайдер')
+    parser.add_argument('--cloud-bucket', default='colorcrypt',
+                        help='S3 bucket или FTP хост')
+    parser.add_argument('--cloud-user', default='anonymous',
+                        help='Имя пользователя для облака')
+    parser.add_argument('--cloud-password', default='',
+                        help='Пароль для облака')
+    parser.add_argument('--cloud-region', default='us-east-1',
+                        help='AWS регион')
+    parser.add_argument('--cloud-folder', default=None,
+                        help='Google Drive folder ID')
 
     args = parser.parse_args()
 
@@ -1937,7 +2112,9 @@ def main_cli():
         ecc_enabled=args.ecc,
         ecc_level=args.ecc_level,
         adaptive_lsb=args.adaptive_lsb,
-        psychovisual_mode=args.psychovisual
+        psychovisual_mode=args.psychovisual,
+        jpeg_dct_mode=args.jpeg_dct,
+        jpeg_dct_f5=args.jpeg_dct_f5
     )
 
     if args.mode == 'encode':
@@ -2021,6 +2198,78 @@ def main_cli():
                 _safe_print(f"  ---")
         else:
             _safe_print("Zagolovkov ne naydeno")
+    elif args.mode == 'jpeg-dct-encode':
+        output_dir = None
+        output_name = None
+        if args.output:
+            if os.path.isdir(args.output):
+                output_dir = args.output
+            else:
+                output_dir = os.path.dirname(args.output) or '.'
+                output_name = os.path.splitext(os.path.basename(args.output))[0]
+        core.jpeg_dct_mode = True
+        result = core.encode_jpeg_dct(args.input, output_dir, output_name)
+        if result['success']:
+            _safe_print(f"JPEG DCT encode uspeshno! {result['output_path']}")
+        else:
+            _safe_print(f"Oshibka: {result.get('error')}")
+            sys.exit(1)
+    elif args.mode == 'jpeg-dct-decode':
+        output_dir = None
+        if args.output:
+            if os.path.isdir(args.output):
+                output_dir = args.output
+            else:
+                output_dir = os.path.dirname(args.output) or '.'
+        result = core.decode_jpeg_dct(args.input, output_dir)
+        if result['success']:
+            _safe_print(f"JPEG DCT decode uspeshno! {result['output_path']}")
+        else:
+            _safe_print(f"Oshibka: {result.get('error')}")
+            sys.exit(1)
+    elif args.mode == 'attack':
+        output_dir = None
+        if args.output:
+            if os.path.isdir(args.output):
+                output_dir = args.output
+            else:
+                output_dir = os.path.dirname(args.output) or '.'
+        result = core.auto_attack(args.input, output_dir)
+        if result['success']:
+            _safe_print(f"Avto-ataka: naydeno {result['num_results']} resheniy:")
+            for method, r in result['results'].items():
+                _safe_print(f"  {method}: {r['output_path']}")
+        else:
+            _safe_print(f"Oshibka: {result.get('error')}")
+            sys.exit(1)
+    elif args.mode in ('cloud-upload', 'cloud-download'):
+        from cloud_io import CloudIO
+        cloud = CloudIO()
+        if args.mode == 'cloud-upload':
+            result = cloud.upload(
+                args.cloud_provider, args.input, args.output,
+                bucket=args.cloud_bucket,
+                access_key=args.cloud_user, secret_key=args.cloud_password,
+                region=args.cloud_region,
+                host=args.cloud_bucket,
+                user=args.cloud_user, password=args.cloud_password,
+                folder_id=args.cloud_folder
+            )
+        else:
+            result = cloud.download(
+                args.cloud_provider, args.input, args.output,
+                bucket=args.cloud_bucket,
+                access_key=args.cloud_user, secret_key=args.cloud_password,
+                region=args.cloud_region,
+                host=args.cloud_bucket,
+                user=args.cloud_user, password=args.cloud_password,
+                folder_id=args.cloud_folder
+            )
+        if result['success']:
+            _safe_print(f"Cloud {args.mode}: uspeshno! {result.get('url', result.get('local_path', ''))}")
+        else:
+            _safe_print(f"Oshibka: {result.get('error')}")
+            sys.exit(1)
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:

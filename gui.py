@@ -17,6 +17,7 @@ except ImportError:
 
 from core import ColorCryptCore, MODE_MONO, MODE_RGB, MODE_RGBA, OUTPUT_FORMATS, ENCODE_MODES, CHUNK_SIZES, CURRENT_VERSION
 from stego_media import MediaSteganography, AVAILABLE_CODECS
+from cloud_io import CloudIO, CLOUD_PROVIDERS
 
 from lang_data import LANG
 
@@ -120,6 +121,20 @@ class ColorCryptApp:
         self.key_var = tk.StringVar(value="")
         self.psychovisual_var = tk.BooleanVar(value=False)
         self.streaming_var = tk.BooleanVar(value=False)
+        self.jpeg_dct_var = tk.BooleanVar(value=False)
+        self.jpeg_dct_f5_var = tk.BooleanVar(value=True)
+
+        self.learn_image_path = ""
+        self.learn_text_var = tk.StringVar(value="Hello, ColorCrypt!")
+
+        self.cloud_provider_var = tk.StringVar(value="S3")
+        self.cloud_bucket_var = tk.StringVar(value="colorcrypt")
+        self.cloud_user_var = tk.StringVar(value="anonymous")
+        self.cloud_password_var = tk.StringVar(value="")
+        self.cloud_region_var = tk.StringVar(value="us-east-1")
+        self.cloud_remote_path = ""
+        self.cloud_local_path = ""
+        self._attack_file_path = ""
 
         self.img_compare_orig_path = ""
         self.img_compare_encoded_path = ""
@@ -197,7 +212,9 @@ class ColorCryptApp:
         tabs = [
             self._tr("main_tab"), self._tr("settings_tab"), self._tr("security_tab"),
             self._tr("batch_tab"), self._tr("iii_tab"), self._tr("media_tab"),
-            self._tr("scanner_tab"), self._tr("img_compare_tab"), self._tr("debug_tab")
+            self._tr("scanner_tab"), self._tr("attack_tab"),
+            self._tr("img_compare_tab"), self._tr("cloud_tab"),
+            self._tr("debug_tab"), self._tr("learn_tab")
         ]
         for i, tab_text in enumerate(tabs):
             self.notebook.tab(i, text=tab_text)
@@ -338,6 +355,19 @@ class ColorCryptApp:
                 if isinstance(parent, ttk.LabelFrame):
                     parent.config(text=self._tr("diff_preview"))
 
+        if hasattr(self, 'attack_btn'):
+            self.attack_btn.config(text=self._tr("attack_btn"))
+        if hasattr(self, 'cloud_upload_btn'):
+            self.cloud_upload_btn.config(text=self._tr("cloud_upload_btn"))
+            self.cloud_download_btn.config(text=self._tr("cloud_download_btn"))
+        if hasattr(self, 'learn_select_btn'):
+            self.learn_select_btn.config(text=self._tr("learn_select"))
+            self.learn_visualize_btn.config(text=self._tr("learn_visualize"))
+            self.learn_step1_label.config(text=self._tr("learn_step1"))
+            self.learn_step2_label.config(text=self._tr("learn_step2"))
+            self.learn_step3_label.config(text=self._tr("learn_step3"))
+            self.learn_step4_label.config(text=self._tr("learn_step4"))
+
         self.debug_opt_frame.config(text=self._tr("debug_options"))
         self.debug_chk.config(text=self._tr("debug_mode"))
         self.debug_clear_btn.config(text=self._tr("debug_clear"))
@@ -470,7 +500,9 @@ class ColorCryptApp:
             salt=salt,
             ecc_enabled=self.ecc_var.get(),
             ecc_level=int(self.ecc_level_var.get()),
-            psychovisual_mode=self.psychovisual_var.get()
+            psychovisual_mode=self.psychovisual_var.get(),
+            jpeg_dct_mode=self.jpeg_dct_var.get(),
+            jpeg_dct_f5=self.jpeg_dct_f5_var.get()
         )
 
     def save_settings(self):
@@ -499,6 +531,8 @@ class ColorCryptApp:
             'key': self.key_var.get(),
             'psychovisual': self.psychovisual_var.get(),
             'streaming': self.streaming_var.get(),
+            'jpeg_dct': self.jpeg_dct_var.get(),
+            'jpeg_dct_f5': self.jpeg_dct_f5_var.get(),
             'salt': self.salt_var.get(),
             'lang': self.lang_var.get(),
             'dark_mode': self.dark_mode_var.get(),
@@ -539,6 +573,8 @@ class ColorCryptApp:
                 self.key_var.set(settings.get('key', ''))
                 self.psychovisual_var.set(settings.get('psychovisual', False))
                 self.streaming_var.set(settings.get('streaming', False))
+                self.jpeg_dct_var.set(settings.get('jpeg_dct', False))
+                self.jpeg_dct_f5_var.set(settings.get('jpeg_dct_f5', True))
                 self.salt_var.set(settings.get('salt', ''))
                 self.lang_var.set(settings.get('lang', 'ru'))
                 self.dark_mode_var.set(settings.get('dark_mode', False))
@@ -776,8 +812,78 @@ class ColorCryptApp:
         scan_frame = ttk.Frame(self.notebook)
         self.notebook.add(scan_frame, text=self._tr("scanner_tab"))
 
+        attack_frame = ttk.Frame(self.notebook)
+        self.notebook.add(attack_frame, text=self._tr("attack_tab"))
+
+        attack_sel_frame = ttk.LabelFrame(attack_frame, text=self._tr("scan_file_frame"))
+        attack_sel_frame.pack(pady=5, padx=10, fill=tk.X)
+        attack_btn_select = ttk.Button(attack_sel_frame, text=self._tr("scan_select_file"),
+                                       command=self._attack_select_file)
+        attack_btn_select.pack(pady=5)
+        self.attack_file_label = ttk.Label(attack_sel_frame, text=self._tr("iii_not_selected"), foreground="gray")
+        self.attack_file_label.pack(pady=2)
+
+        attack_action = ttk.Frame(attack_frame)
+        attack_action.pack(pady=10)
+        self.attack_btn = ttk.Button(attack_action, text=self._tr("attack_btn"),
+                                     command=self._attack_process, width=20)
+        self.attack_btn.pack()
+
+        self.attack_result_text = scrolledtext.ScrolledText(attack_frame, height=15, font=("Courier", 9))
+        self.attack_result_text.pack(pady=5, padx=10, fill=tk.BOTH, expand=True)
+
         compare_frame = ttk.Frame(self.notebook)
         self.notebook.add(compare_frame, text=self._tr("img_compare_tab"))
+
+        cloud_frame = ttk.Frame(self.notebook)
+        self.notebook.add(cloud_frame, text=self._tr("cloud_tab"))
+
+        cloud_provider_frame = ttk.LabelFrame(cloud_frame, text=self._tr("cloud_provider"))
+        cloud_provider_frame.pack(pady=5, padx=10, fill=tk.X)
+        prov_row = ttk.Frame(cloud_provider_frame)
+        prov_row.pack(padx=5, pady=5)
+        ttk.Label(prov_row, text=self._tr("cloud_provider")).pack(side=tk.LEFT)
+        prov_combo = ttk.Combobox(prov_row, textvariable=self.cloud_provider_var,
+                                  values=CLOUD_PROVIDERS if CLOUD_PROVIDERS else ["S3"],
+                                  state="readonly", width=15)
+        prov_combo.pack(side=tk.LEFT, padx=5)
+        if not CLOUD_PROVIDERS:
+            ttk.Label(cloud_provider_frame, text=self._tr("cloud_no_providers"),
+                      foreground="gray", wraplength=500).pack(padx=5, pady=5)
+
+        bucket_frame = ttk.LabelFrame(cloud_frame, text=self._tr("cloud_bucket"))
+        bucket_frame.pack(pady=5, padx=10, fill=tk.X)
+        ttk.Entry(bucket_frame, textvariable=self.cloud_bucket_var, width=50).pack(padx=5, pady=5, fill=tk.X)
+
+        cred_frame = ttk.LabelFrame(cloud_frame, text=self._tr("cloud_user"))
+        cred_frame.pack(pady=5, padx=10, fill=tk.X)
+        user_row = ttk.Frame(cred_frame)
+        user_row.pack(fill=tk.X, padx=5, pady=2)
+        ttk.Label(user_row, text=self._tr("cloud_user")).pack(side=tk.LEFT)
+        ttk.Entry(user_row, textvariable=self.cloud_user_var, width=30).pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+        pass_row = ttk.Frame(cred_frame)
+        pass_row.pack(fill=tk.X, padx=5, pady=2)
+        ttk.Label(pass_row, text=self._tr("cloud_password")).pack(side=tk.LEFT)
+        ttk.Entry(pass_row, textvariable=self.cloud_password_var, width=30, show="*").pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+        region_row = ttk.Frame(cred_frame)
+        region_row.pack(fill=tk.X, padx=5, pady=2)
+        ttk.Label(region_row, text=self._tr("cloud_region")).pack(side=tk.LEFT)
+        ttk.Entry(region_row, textvariable=self.cloud_region_var, width=20).pack(side=tk.LEFT, padx=5)
+
+        cloud_actions = ttk.Frame(cloud_frame)
+        cloud_actions.pack(pady=10)
+        self.cloud_upload_btn = ttk.Button(cloud_actions, text=self._tr("cloud_upload_btn"),
+                                           command=self._cloud_upload, width=18)
+        self.cloud_upload_btn.pack(side=tk.LEFT, padx=5)
+        self.cloud_download_btn = ttk.Button(cloud_actions, text=self._tr("cloud_download_btn"),
+                                             command=self._cloud_download, width=18)
+        self.cloud_download_btn.pack(side=tk.LEFT, padx=5)
+
+        self.cloud_result_text = scrolledtext.ScrolledText(cloud_frame, height=8, font=("Courier", 9))
+        self.cloud_result_text.pack(pady=5, padx=10, fill=tk.BOTH, expand=True)
+
+        self.cloud_status_label = ttk.Label(cloud_frame, text=self._tr("ready"), foreground="gray")
+        self.cloud_status_label.pack(pady=3)
 
         top_row = ttk.Frame(compare_frame)
         top_row.pack(fill=tk.X, padx=5, pady=5)
@@ -833,6 +939,84 @@ class ColorCryptApp:
 
         debug_frame = ttk.Frame(self.notebook)
         self.notebook.add(debug_frame, text=self._tr("debug_tab"))
+
+        learn_frame = ttk.Frame(self.notebook)
+        self.notebook.add(learn_frame, text=self._tr("learn_tab"))
+
+        learn_title = ttk.Label(learn_frame, text=self._tr("learn_title"),
+                                font=("", 12, "bold"))
+        learn_title.pack(pady=5)
+
+        learn_select_frame = ttk.Frame(learn_frame)
+        learn_select_frame.pack(fill=tk.X, padx=10, pady=5)
+        self.learn_select_btn = ttk.Button(learn_select_frame, text=self._tr("learn_select"),
+                                           command=self._learn_select_image)
+        self.learn_select_btn.pack(side=tk.LEFT, padx=5)
+        self.learn_image_label = ttk.Label(learn_select_frame, text=self._tr("iii_not_selected"), foreground="gray")
+        self.learn_image_label.pack(side=tk.LEFT, padx=5)
+
+        text_frame = ttk.Frame(learn_frame)
+        text_frame.pack(fill=tk.X, padx=10, pady=5)
+        ttk.Label(text_frame, text=self._tr("learn_embed_text")).pack(side=tk.LEFT)
+        self.learn_text_entry = ttk.Entry(text_frame, textvariable=self.learn_text_var, width=60)
+        self.learn_text_entry.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+
+        btn_frame = ttk.Frame(learn_frame)
+        btn_frame.pack(pady=5)
+        self.learn_visualize_btn = ttk.Button(btn_frame, text=self._tr("learn_visualize"),
+                                              command=self._learn_visualize, width=20)
+        self.learn_visualize_btn.pack()
+
+        viz_frame = ttk.Frame(learn_frame)
+        viz_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        self.learn_step1_label = ttk.Label(viz_frame, text=self._tr("learn_step1"))
+        self.learn_step1_label.pack()
+
+        self.learn_canvas_orig = tk.Canvas(viz_frame, width=256, height=256,
+                                           bg=self.dark_mode_var.get() and "#1e1e1e" or "#ffffff",
+                                           highlightthickness=1, highlightcolor="gray")
+        self.learn_canvas_orig.pack(side=tk.LEFT, padx=5, pady=5)
+
+        self.learn_step2_label = ttk.Label(viz_frame, text=self._tr("learn_step2"))
+        self.learn_step2_label.pack()
+        self.learn_canvas_stego = tk.Canvas(viz_frame, width=256, height=256,
+                                            bg=self.dark_mode_var.get() and "#1e1e1e" or "#ffffff",
+                                            highlightthickness=1, highlightcolor="gray")
+        self.learn_canvas_stego.pack(side=tk.LEFT, padx=5, pady=5)
+
+        self.learn_step3_label = ttk.Label(viz_frame, text=self._tr("learn_step3"))
+        self.learn_step3_label.pack()
+        self.learn_canvas_diff = tk.Canvas(viz_frame, width=256, height=256,
+                                           bg=self.dark_mode_var.get() and "#1e1e1e" or "#ffffff",
+                                           highlightthickness=1, highlightcolor="gray")
+        self.learn_canvas_diff.pack(side=tk.LEFT, padx=5, pady=5)
+
+        self.learn_step4_label = ttk.Label(viz_frame, text=self._tr("learn_step4"))
+        self.learn_step4_label.pack()
+        self.learn_canvas_lsb = tk.Canvas(viz_frame, width=256, height=256,
+                                          bg=self.dark_mode_var.get() and "#1e1e1e" or "#ffffff",
+                                          highlightthickness=1, highlightcolor="gray")
+        self.learn_canvas_lsb.pack(side=tk.LEFT, padx=5, pady=5)
+
+        info_frame = ttk.LabelFrame(learn_frame, text=self._tr("learn_info"))
+        info_frame.pack(fill=tk.X, padx=10, pady=5)
+        self.learn_info_text = scrolledtext.ScrolledText(info_frame, height=8, font=("Courier", 9))
+        self.learn_info_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        learn_explain_frame = ttk.LabelFrame(learn_frame, text="LSB")
+        learn_explain_frame.pack(fill=tk.X, padx=10, pady=5)
+        explain_lsb = ttk.Label(learn_explain_frame, text=self._tr("learn_lsb_explain"),
+                                wraplength=900, justify=tk.LEFT)
+        explain_lsb.pack(padx=10, pady=5)
+        explain_how = ttk.Label(learn_explain_frame, text=self._tr("learn_how_it_works"),
+                                wraplength=900, justify=tk.LEFT, foreground="gray")
+        explain_how.pack(padx=10, pady=5)
+
+        self.learn_dct_tk_orig = None
+        self.learn_dct_tk_stego = None
+        self.learn_dct_tk_diff = None
+        self.learn_dct_tk_lsb = None
 
         self.mode_frame = ttk.LabelFrame(main_frame, text=self._tr("mode_frame"))
         self.mode_frame.pack(pady=5, padx=10, fill=tk.X)
@@ -983,6 +1167,16 @@ class ColorCryptApp:
                                                 variable=self.psychovisual_var,
                                                 command=self._update_core_settings)
         self.psychovisual_chk.pack(anchor=tk.W, padx=5, pady=2)
+
+        self.jpeg_dct_chk = ttk.Checkbutton(self.opt_frame, text=self._tr("jpeg_dct_label"),
+                                            variable=self.jpeg_dct_var,
+                                            command=self._update_core_settings)
+        self.jpeg_dct_chk.pack(anchor=tk.W, padx=5, pady=2)
+        self.jpeg_dct_f5_chk = ttk.Checkbutton(self.opt_frame, text=self._tr("jpeg_dct_f5_chk"),
+                                               variable=self.jpeg_dct_f5_var,
+                                               command=self._update_core_settings)
+        self.jpeg_dct_f5_chk.pack(anchor=tk.W, padx=20, pady=2)
+        ttk.Label(self.opt_frame, text=self._tr("jpeg_dct_hint"), foreground="gray").pack(anchor=tk.W, padx=20)
 
         self.preserve_chk = ttk.Checkbutton(self.opt_frame, text=self._tr("preserve_name"),
                                             variable=self.preserve_filename_var, command=self._update_core_settings)
@@ -1500,7 +1694,10 @@ class ColorCryptApp:
     def _decode_with_password(self, password):
         try:
             output_dir = self.output_dir_var.get() if self.output_dir_var.get() else None
-            result = self.core.decode(self.input_file_path, output_dir, password=password)
+            if self.core.jpeg_dct_mode:
+                result = self.core.decode_jpeg_dct(self.input_file_path, output_dir)
+            else:
+                result = self.core.decode(self.input_file_path, output_dir, password=password)
             self.root.after(0, lambda: self._decode_callback(result))
         except Exception as e:
             self.root.after(0, lambda: messagebox.showerror(self._tr("error"), str(e)))
@@ -1512,7 +1709,10 @@ class ColorCryptApp:
     def _encode(self):
         try:
             output_dir = self.output_dir_var.get() if self.output_dir_var.get() else None
-            result = self.core.encode(self.input_file_path, output_dir)
+            if self.core.jpeg_dct_mode:
+                result = self.core.encode_jpeg_dct(self.input_file_path, output_dir)
+            else:
+                result = self.core.encode(self.input_file_path, output_dir)
             self.root.after(0, lambda: self._encode_callback(result))
         except Exception as e:
             self.root.after(0, lambda: messagebox.showerror(self._tr("error"), str(e)))
@@ -2170,6 +2370,214 @@ class ColorCryptApp:
                 self.compare_status_label.config(text=self._tr("saved_as", os.path.basename(path)))
             except Exception as e:
                 messagebox.showerror(self._tr("error"), str(e))
+
+
+    # ─── Attack Tab ─────────────────────────────────────────────────
+
+    def _attack_select_file(self):
+        path = filedialog.askopenfilename(title=self._tr("select_scan"),
+                                          filetypes=[("Image files", "*.png *.webp *.bmp *.tiff *.jpg *.jpeg")])
+        if path:
+            self._attack_file_path = path
+            self.attack_file_label.config(text=os.path.basename(path))
+
+    def _attack_process(self):
+        if not hasattr(self, '_attack_file_path') or not self._attack_file_path:
+            messagebox.showwarning(self._tr("notice"), self._tr("err_scan_no_file"))
+            return
+        self.attack_result_text.delete(1.0, tk.END)
+        self.attack_result_text.insert(tk.END, self._tr("attack_working") + "\n")
+        self.attack_btn.config(state=tk.DISABLED)
+
+        def task():
+            try:
+                result = self.core.auto_attack(self._attack_file_path)
+                self.root.after(0, lambda: self._attack_callback(result))
+            except Exception as e:
+                self.root.after(0, lambda: self._attack_callback({'success': False, 'error': str(e)}))
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _attack_callback(self, result):
+        self.attack_btn.config(state=tk.NORMAL)
+        self.attack_result_text.delete(1.0, tk.END)
+        if result['success']:
+            self.attack_result_text.insert(tk.END, self._tr("attack_found", result['num_results']) + "\n\n")
+            for method, r in result['results'].items():
+                self.attack_result_text.insert(tk.END, f"  [{method}] {r.get('output_path', '')}\n")
+                if 'size' in r:
+                    self.attack_result_text.insert(tk.END, f"    Size: {r['size']} bytes\n")
+                self.attack_result_text.insert(tk.END, "\n")
+        else:
+            self.attack_result_text.insert(tk.END, self._tr("attack_none") + "\n")
+            self.attack_result_text.insert(tk.END, result.get('error', '') + "\n")
+
+    # ─── Cloud Tab ──────────────────────────────────────────────────
+
+    def _cloud_upload(self):
+        path = filedialog.askopenfilename(title=self._tr("encode_hint"))
+        if not path:
+            return
+        self.cloud_result_text.delete(1.0, tk.END)
+        self.cloud_result_text.insert(tk.END, self._tr("cloud_working") + "\n")
+        self.cloud_upload_btn.config(state=tk.DISABLED)
+        self.cloud_download_btn.config(state=tk.DISABLED)
+
+        def task():
+            try:
+                cloud = CloudIO(debug_callback=lambda m: self._debug_log(m))
+                result = cloud.upload(
+                    self.cloud_provider_var.get(), path,
+                    bucket=self.cloud_bucket_var.get(),
+                    access_key=self.cloud_user_var.get(),
+                    secret_key=self.cloud_password_var.get(),
+                    region=self.cloud_region_var.get(),
+                    host=self.cloud_bucket_var.get(),
+                    user=self.cloud_user_var.get(),
+                    password=self.cloud_password_var.get(),
+                    folder_id=None
+                )
+                self.root.after(0, lambda: self._cloud_callback(result, "upload"))
+            except Exception as e:
+                self.root.after(0, lambda: self._cloud_callback({'success': False, 'error': str(e)}, "upload"))
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _cloud_download(self):
+        path = filedialog.asksaveasfilename(title=self._tr("select_save_as"))
+        if not path:
+            return
+        remote = simpledialog.askstring(self._tr("cloud_tab"), "Remote path / file ID:")
+        if not remote:
+            return
+        self.cloud_result_text.delete(1.0, tk.END)
+        self.cloud_result_text.insert(tk.END, self._tr("cloud_working") + "\n")
+        self.cloud_upload_btn.config(state=tk.DISABLED)
+        self.cloud_download_btn.config(state=tk.DISABLED)
+
+        def task():
+            try:
+                cloud = CloudIO(debug_callback=lambda m: self._debug_log(m))
+                result = cloud.download(
+                    self.cloud_provider_var.get(), remote, path,
+                    bucket=self.cloud_bucket_var.get(),
+                    access_key=self.cloud_user_var.get(),
+                    secret_key=self.cloud_password_var.get(),
+                    region=self.cloud_region_var.get(),
+                    host=self.cloud_bucket_var.get(),
+                    user=self.cloud_user_var.get(),
+                    password=self.cloud_password_var.get(),
+                    folder_id=None
+                )
+                self.root.after(0, lambda: self._cloud_callback(result, "download"))
+            except Exception as e:
+                self.root.after(0, lambda: self._cloud_callback({'success': False, 'error': str(e)}, "download"))
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _cloud_callback(self, result, action):
+        self.cloud_upload_btn.config(state=tk.NORMAL)
+        self.cloud_download_btn.config(state=tk.NORMAL)
+        self.cloud_result_text.delete(1.0, tk.END)
+        if result['success']:
+            url = result.get('url', result.get('local_path', ''))
+            self.cloud_result_text.insert(tk.END, self._tr("cloud_success", url) + "\n")
+            self.cloud_status_label.config(text=self._tr("cloud_success", url))
+        else:
+            self.cloud_result_text.insert(tk.END, self._tr("cloud_error", result.get('error', '')) + "\n")
+            self.cloud_status_label.config(text=self._tr("status_error"))
+
+    # ─── Learning Tab ───────────────────────────────────────────────
+
+    def _learn_select_image(self):
+        path = filedialog.askopenfilename(title=self._tr("learn_select"),
+                                          filetypes=[("Image files", "*.png *.webp *.bmp *.jpg *.jpeg")])
+        if path:
+            self.learn_image_path = path
+            self.learn_image_label.config(text=os.path.basename(path))
+
+    def _learn_visualize(self):
+        if not self.learn_image_path:
+            messagebox.showwarning(self._tr("notice"), self._tr("err_scan_no_file"))
+            return
+        self.learn_info_text.delete(1.0, tk.END)
+        self.learn_visualize_btn.config(state=tk.DISABLED)
+
+        def task():
+            try:
+                self._learn_do_visualize()
+            except Exception as e:
+                self.root.after(0, lambda: self.learn_info_text.insert(tk.END, f"Error: {e}\n"))
+            finally:
+                self.root.after(0, lambda: self.learn_visualize_btn.config(state=tk.NORMAL))
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _learn_do_visualize(self):
+        from PIL import Image, ImageTk, ImageOps
+        import numpy as np
+
+        img = Image.open(self.learn_image_path).convert('RGB')
+        img.thumbnail((256, 256), Image.LANCZOS)
+        orig_arr = np.array(img, dtype=np.uint8)
+
+        embed_text = self.learn_text_var.get()
+        if not embed_text:
+            embed_text = "Hello!"
+        data = embed_text.encode('utf-8')
+        bits = np.unpackbits(np.frombuffer(data, dtype=np.uint8))
+
+        flat = orig_arr.copy().reshape(-1)
+        n = min(len(bits), len(flat))
+        flat[:n] = (flat[:n] & 0xFE) | bits[:n]
+        stego_arr = flat.reshape(orig_arr.shape)
+
+        diff_arr = np.abs(orig_arr.astype(np.int16) - stego_arr.astype(np.int16)).astype(np.uint8) * 10
+        lsb_arr = (stego_arr & 1) * 255
+
+        changed = int(np.sum(np.abs(orig_arr.astype(np.int16) - stego_arr.astype(np.int16)) > 0))
+        total = orig_arr.size
+        psnr_val = 10.0 * np.log10(255.0**2 / (np.mean((orig_arr.astype(np.float32) - stego_arr.astype(np.float32))**2) + 1e-10))
+
+        def _resize_for_canvas(canvas, arr):
+            h, w, _ = arr.shape
+            cw = int(canvas.cget("width"))
+            ch = int(canvas.cget("height"))
+            pil_img = Image.fromarray(arr)
+            pil_img.thumbnail((cw, ch), Image.LANCZOS)
+            return ImageTk.PhotoImage(pil_img)
+
+        from PIL import ImageTk
+
+        orig_tk = _resize_for_canvas(self.learn_canvas_orig, orig_arr)
+        stego_tk = _resize_for_canvas(self.learn_canvas_stego, stego_arr)
+        diff_tk = _resize_for_canvas(self.learn_canvas_diff, diff_arr)
+        lsb_tk = _resize_for_canvas(self.learn_canvas_lsb, np.stack([lsb_arr, lsb_arr, lsb_arr], axis=-1))
+
+        self.learn_dct_tk_orig = orig_tk
+        self.learn_dct_tk_stego = stego_tk
+        self.learn_dct_tk_diff = diff_tk
+        self.learn_dct_tk_lsb = lsb_tk
+
+        def update_ui():
+            self.learn_canvas_orig.delete("all")
+            self.learn_canvas_orig.create_image(0, 0, anchor=tk.NW, image=orig_tk)
+            self.learn_canvas_stego.delete("all")
+            self.learn_canvas_stego.create_image(0, 0, anchor=tk.NW, image=stego_tk)
+            self.learn_canvas_diff.delete("all")
+            self.learn_canvas_diff.create_image(0, 0, anchor=tk.NW, image=diff_tk)
+            self.learn_canvas_lsb.delete("all")
+            self.learn_canvas_lsb.create_image(0, 0, anchor=tk.NW, image=lsb_tk)
+
+            self.learn_info_text.delete(1.0, tk.END)
+            self.learn_info_text.insert(tk.END, self._tr("learn_pixel_changed", changed, total // 3, (changed * 100.0) / (total // 3 + 1)) + "\n")
+            self.learn_info_text.insert(tk.END, self._tr("learn_bits_embedded", len(bits)) + "\n")
+            self.learn_info_text.insert(tk.END, self._tr("learn_psnr", psnr_val) + "\n")
+            self.learn_info_text.insert(tk.END, f"\nText: {embed_text}\n")
+            self.learn_info_text.insert(tk.END, f"Image size: {orig_arr.shape[1]}x{orig_arr.shape[0]}\n")
+            self.learn_info_text.insert(tk.END, f"Capacity: ~{len(flat) // 8} bytes (1 LSB)\n")
+
+        self.root.after(0, update_ui)
 
 
 def main():

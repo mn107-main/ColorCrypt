@@ -372,6 +372,13 @@ The GUI provides tabs for:
 4. **Media steganography:** Data bits are embedded into GIF frame pixels, video YUV (U/V) planes via FFmpeg, or MP3 audio samples.
 5. **Scanning:** The program searches raw bytes for `V1|...` headers (direct mode) and all LSB layers (1–8 bits) across all channel combinations for the `0xCC0DE5` magic signature (III mode).
 
+## Future Ideas
+
+- **JPEG Resilience** — embed data in DCT coefficients (JSteg/F5) instead of LSB to survive JPEG recompression
+- **Auto-Attack / Detection** — reverse function that brute-forces parameters (bit depth, mode) to extract hidden messages without a password
+- **Cloud Extension** — direct upload/download of encoded images via S3, FTP, or Google Drive
+- **Interactive Learning Mode** — sandbox tab in GUI showing bit-level changes during embedding step-by-step
+
 ## Project structure
 
 - `core.py` — encoding/decoding engine + CLI (performance, Image‑in‑Image, scanning)

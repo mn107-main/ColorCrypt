@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.4.0] — 2026-06-25
+
+### Added
+- **JPEG DCT steganography** — `stego_jpeg.py` module with JSteg/F5 embedding in DCT coefficients; CLI `jpeg-dct-encode`/`jpeg-dct-decode` modes; GUI checkbox in Settings tab
+- **Auto attack mode** — Brute-force extraction of hidden data without password (tries LSB 1-4, K-LSB, DCT); `attack` CLI mode; GUI Attack tab
+- **Cloud I/O** — `cloud_io.py` module supporting S3, FTP, and Google Drive upload/download; `cloud-upload`/`cloud-download` CLI modes; GUI Cloud tab
+- **Interactive Learning Sandbox** — New GUI tab with step-by-step visualization of LSB steganography (original, stego, difference ×10, LSB layer ×10 contrast, PSNR metrics)
+- **All new features** have Russian/English translations in `lang_data.py`
+
 ## [2.3.0] — 2026-06-17
 
 ### Added
